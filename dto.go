@@ -33,7 +33,7 @@ func (d portfolioDTO) toDomain(now time.Time, idOpt ...string) (Portfolio, error
 	}
 	base := strings.ToUpper(strings.TrimSpace(d.BaseCCY))
 	if base == "" {
-		base = "USD"
+		base = "TWD" // default ref currency => TWD
 	}
 	return Portfolio{
 		ID:        id,

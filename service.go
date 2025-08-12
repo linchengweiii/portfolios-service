@@ -46,13 +46,24 @@ func (s *PortfolioService) Update(id string, dto portfolioDTO) (Portfolio, error
 /* ===================== Transaction service ===================== */
 
 type TransactionService struct {
-	repoTx TransactionRepository
-	repoPf PortfolioRepository
-	prices PriceProvider
+	repoTx    TransactionRepository
+	repoPf    PortfolioRepository
+	prices    PriceProvider
+	exchanger CurrencyExchanger
+	refCCY    string
 }
 
-func NewTransactionService(txRepo TransactionRepository, pfRepo PortfolioRepository, priceProvider PriceProvider) *TransactionService {
-	return &TransactionService{repoTx: txRepo, repoPf: pfRepo, prices: priceProvider}
+func NewTransactionService(txRepo TransactionRepository, pfRepo PortfolioRepository, priceProvider PriceProvider, exchanger CurrencyExchanger, refCCY string) *TransactionService {
+	if refCCY == "" {
+		refCCY = "TWD"
+	}
+	return &TransactionService{
+		repoTx:    txRepo,
+		repoPf:    pfRepo,
+		prices:    priceProvider,
+		exchanger: exchanger,
+		refCCY:    strings.ToUpper(refCCY),
+	}
 }
 
 func (s *TransactionService) CreateOne(portfolioID string, dto transactionDTO) (Transaction, error) {
@@ -109,6 +120,17 @@ func (s *TransactionService) Delete(portfolioID, id string) error {
 	return s.repoTx.Delete(portfolioID, id)
 }
 
+func (s *TransactionService) rate(from string) float64 {
+	if s.exchanger == nil || strings.EqualFold(from, s.refCCY) || strings.TrimSpace(from) == "" {
+		return 1.0
+	}
+	r, _, err := s.exchanger.Rate(from, s.refCCY)
+	if err != nil || r <= 0 {
+		return 1.0 // graceful fallback
+	}
+	return r
+}
+
 /* ===================== Allocations ===================== */
 
 type AllocationItem struct {
@@ -124,6 +146,7 @@ type AllocationResponse struct {
 	TotalInvested    float64          `json:"total_invested,omitempty"`
 	TotalMarketValue float64          `json:"total_market_value,omitempty"`
 	AsOf             time.Time        `json:"as_of,omitempty"`
+	RefCurrency      string           `json:"ref_currency"`
 	Items            []AllocationItem `json:"items"`
 }
 
@@ -159,7 +182,8 @@ func (s *TransactionService) ComputeAllocationsAll(basis string) (AllocationResp
 func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis string) (AllocationResponse, error) {
 	type agg struct {
 		shares   float64
-		invested float64
+		invested float64 // already converted into ref currency
+		currency string  // last seen tx currency for the symbol
 	}
 	bucket := map[string]*agg{}
 
@@ -169,18 +193,21 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 			a = &agg{}
 			bucket[tx.Symbol] = a
 		}
+		if tx.Currency != "" {
+			a.currency = strings.ToUpper(tx.Currency)
+		}
 		switch tx.TradeType {
 		case TradeTypeBuy:
 			a.shares += tx.Shares
-			if tx.Total < 0 {
-				a.invested += -tx.Total
-			} else {
-				a.invested += tx.Total
+			amt := tx.Total
+			if amt < 0 {
+				amt = -amt
 			}
+			a.invested += amt * s.rate(tx.Currency)
 		case TradeTypeSell:
 			a.shares -= tx.Shares
 		case TradeTypeDividend:
-			// ignore
+			// ignore for allocation
 		}
 	}
 
@@ -189,6 +216,9 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 	case "", "invested":
 		var totalInv float64
 		for sym, a := range bucket {
+			if a.shares <= 0 && a.invested == 0 {
+				continue
+			}
 			items = append(items, AllocationItem{Symbol: sym, Shares: a.shares, Invested: a.invested})
 			totalInv += a.invested
 		}
@@ -200,6 +230,7 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 		return AllocationResponse{
 			Basis:         "invested",
 			TotalInvested: totalInv,
+			RefCurrency:   s.refCCY,
 			Items:         items,
 		}, nil
 
@@ -217,7 +248,7 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 			if err != nil {
 				continue // skip symbols we can't price
 			}
-			mv := a.shares * price
+			mv := a.shares * price * s.rate(a.currency)
 			items = append(items, AllocationItem{
 				Symbol:      sym,
 				Shares:      a.shares,
@@ -238,6 +269,7 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 			Basis:            "market_value",
 			TotalMarketValue: totalMV,
 			AsOf:             asOf,
+			RefCurrency:      s.refCCY,
 			Items:            items,
 		}, nil
 
@@ -249,17 +281,18 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 /* ===================== Global summary ===================== */
 
 type PositionSummary struct {
-	Symbol                 string  `json:"symbol"`
-	Shares                 float64 `json:"shares"`
-	Invested               float64 `json:"invested"`
-	MarketValue            float64 `json:"market_value"`
-	UnrealizedPL           float64 `json:"unrealized_pl"`
-	UnrealizedPLPercent    float64 `json:"unrealized_pl_percent"`
-	WeightPercentByMV      float64 `json:"weight_percent_by_market_value"`
+	Symbol              string  `json:"symbol"`
+	Shares              float64 `json:"shares"`
+	Invested            float64 `json:"invested"`
+	MarketValue         float64 `json:"market_value"`
+	UnrealizedPL        float64 `json:"unrealized_pl"`
+	UnrealizedPLPercent float64 `json:"unrealized_pl_percent"`
+	WeightPercentByMV   float64 `json:"weight_percent_by_market_value"`
 }
 
 type SummaryResponse struct {
 	AsOf                  time.Time         `json:"as_of"`
+	RefCurrency           string            `json:"ref_currency"`
 	TotalInvested         float64           `json:"total_invested"`
 	TotalMarketValue      float64           `json:"total_market_value"`
 	TotalUnrealizedPL     float64           `json:"total_unrealized_pl"`
@@ -268,7 +301,8 @@ type SummaryResponse struct {
 }
 
 // Overall (all portfolios). P/L here is UNREALIZED = MV − invested.
-// "Invested" = sum ABS(purchase totals); sells don't reduce invested.
+// "Invested" = sum ABS(purchase totals) converted to refCCY; sells don't reduce invested.
+// Also: drop positions with zero shares (your request).
 func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
 	if s.prices == nil {
 		return SummaryResponse{}, errors.New("no PriceProvider configured (required for summary)")
@@ -280,7 +314,8 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
 
 	type agg struct {
 		shares   float64
-		invested float64
+		invested float64 // in ref currency
+		currency string
 	}
 	bucket := map[string]*agg{}
 
@@ -295,14 +330,17 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
 				a = &agg{}
 				bucket[tx.Symbol] = a
 			}
+			if tx.Currency != "" {
+				a.currency = strings.ToUpper(tx.Currency)
+			}
 			switch tx.TradeType {
 			case TradeTypeBuy:
 				a.shares += tx.Shares
-				if tx.Total < 0 {
-					a.invested += -tx.Total
-				} else {
-					a.invested += tx.Total
+				amt := tx.Total
+				if amt < 0 {
+					amt = -amt
 				}
+				a.invested += amt * s.rate(tx.Currency)
 			case TradeTypeSell:
 				a.shares -= tx.Shares
 			case TradeTypeDividend:
@@ -311,20 +349,20 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
 		}
 	}
 
-	out := SummaryResponse{}
+	out := SummaryResponse{RefCurrency: s.refCCY}
 	var totalMV, totalInv float64
 	var asOf time.Time
 
 	positions := make([]PositionSummary, 0, len(bucket))
 	for sym, a := range bucket {
-		if a.shares <= 0 && a.invested == 0 {
+		if a.shares <= 0 { // remove any stock with no shares
 			continue
 		}
 		price, ts, err := s.prices.GetPrice(sym)
 		if err != nil {
 			continue
 		}
-		mv := a.shares * price
+		mv := a.shares * price * s.rate(a.currency)
 		pl := mv - a.invested
 		plPct := 0.0
 		if a.invested > 0 {

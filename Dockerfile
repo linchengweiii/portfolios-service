@@ -35,7 +35,9 @@ VOLUME ["/data"]
 
 # Defaults: CSV repo + data dir; provide API key at runtime
 ENV REPO_KIND=csv \
-    DATA_DIR=/data
+    DATA_DIR=/data \
+    PRICE_PROVIDER=yahoo \
+    REF_CCY=TWD
 
 EXPOSE 8080
 COPY --from=build /out/portfolio-service /usr/local/bin/portfolio-service

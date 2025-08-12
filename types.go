@@ -7,7 +7,7 @@ import "time"
 type TradeType string
 
 const (
-	TradeTypePurchase TradeType = "purchase"
+	TradeTypeBuy      TradeType = "buy"
 	TradeTypeSell     TradeType = "sell"
 	TradeTypeDividend TradeType = "dividend"
 )
@@ -15,7 +15,7 @@ const (
 type Portfolio struct {
 	ID        string    `json:"id"`
 	Name      string    `json:"name"`
-	BaseCCY   string    `json:"base_ccy,omitempty"`
+	BaseCCY   string    `json:"base_ccy"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }

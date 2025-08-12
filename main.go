@@ -32,10 +32,21 @@ func main() {
 		txRepo = NewCSVTransactionRepo(store)
 	}
 
-	// Real price provider (Alpha Vantage). Needed for market_value endpoints.
-	priceProv, err := NewAlphaVantageProviderFromEnv()
-	if err != nil {
-		log.Printf("Price provider not configured: %v", err)
+	// Price provider selection
+	var priceProv PriceProvider
+
+	prov := strings.ToLower(strings.TrimSpace(os.Getenv("PRICE_PROVIDER")))
+	switch prov {
+	case "alphavantage", "alpha", "av":
+		ap, err := NewAlphaVantageProviderFromEnv()
+		if err != nil {
+			log.Printf("Alpha Vantage not configured (%v); falling back to Yahoo.", err)
+			priceProv = NewYahooProvider()
+		} else {
+			priceProv = ap
+		}
+	default: // default to Yahoo
+		priceProv = NewYahooProvider()
 	}
 
 	pfSvc := NewPortfolioService(pfRepo)

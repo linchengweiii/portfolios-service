@@ -16,27 +16,34 @@ type portfolioDTO struct {
 	BaseCCY string `json:"base_ccy,omitempty"`
 }
 
-func (d portfolioDTO) toDomain(now time.Time, idOpt ...string) (Portfolio, error) {
+func (d portfolioDTO) validate() error {
 	if strings.TrimSpace(d.Name) == "" {
-		return Portfolio{}, errors.New("name is required")
+		return errors.New("name is required")
 	}
-	id := ""
-	if len(idOpt) > 0 {
+	return nil
+}
+
+func (d portfolioDTO) toDomain(now time.Time, idOpt ...string) (Portfolio, error) {
+	if err := d.validate(); err != nil {
+		return Portfolio{}, err
+	}
+	id := uuid.New().String()
+	if len(idOpt) > 0 && idOpt[0] != "" {
 		id = idOpt[0]
 	}
-	if id == "" {
-		id = uuid.NewString()
+	base := strings.ToUpper(strings.TrimSpace(d.BaseCCY))
+	if base == "" {
+		base = "USD"
 	}
 	return Portfolio{
 		ID:        id,
 		Name:      strings.TrimSpace(d.Name),
-		BaseCCY:   strings.ToUpper(strings.TrimSpace(d.BaseCCY)),
+		BaseCCY:   base,
 		CreatedAt: now,
 		UpdatedAt: now,
 	}, nil
 }
 
-// Transaction DTO (date is "YYYY/MM/DD"). Only "symbol".
 type transactionDTO struct {
 	Symbol    string    `json:"symbol"`
 	TradeType TradeType `json:"trade_type"`
@@ -52,14 +59,14 @@ const payloadDateLayout = "2006/01/02"
 
 func normalizeTradeType(tt TradeType) (TradeType, error) {
 	switch strings.ToLower(string(tt)) {
-	case "purchase":
-		return TradeTypePurchase, nil
+	case "buy":
+		return TradeTypeBuy, nil
 	case "sell":
 		return TradeTypeSell, nil
 	case "dividend":
 		return TradeTypeDividend, nil
 	default:
-		return "", fmt.Errorf("unsupported trade_type: %q (use purchase|sell|dividend)", tt)
+		return "", fmt.Errorf("unsupported trade_type: %q (use buy|sell|dividend)", tt)
 	}
 }
 
@@ -68,24 +75,21 @@ func (d transactionDTO) toDomain(now time.Time, portfolioID string, idOpt ...str
 	if err != nil {
 		return Transaction{}, fmt.Errorf("invalid date %q (use YYYY/MM/DD): %w", d.Date, err)
 	}
+
+	id := uuid.New().String()
+	if len(idOpt) > 0 && idOpt[0] != "" {
+		id = idOpt[0]
+	}
 	symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
-	if symbol == "" || d.Currency == "" || d.TradeType == "" {
-		return Transaction{}, errors.New("symbol, currency, trade_type are required")
+	if symbol == "" {
+		return Transaction{}, errors.New("symbol is required")
 	}
-	if d.Shares < 0 || d.Price < 0 || d.Fee < 0 {
-		return Transaction{}, errors.New("shares, price, and fee must be >= 0")
-	}
+
 	tt, err := normalizeTradeType(d.TradeType)
 	if err != nil {
 		return Transaction{}, err
 	}
-	id := ""
-	if len(idOpt) > 0 {
-		id = idOpt[0]
-	}
-	if id == "" {
-		id = uuid.NewString()
-	}
+
 	return Transaction{
 		ID:          id,
 		PortfolioID: portfolioID,

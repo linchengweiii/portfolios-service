@@ -170,7 +170,7 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 			bucket[tx.Symbol] = a
 		}
 		switch tx.TradeType {
-		case TradeTypePurchase:
+		case TradeTypeBuy:
 			a.shares += tx.Shares
 			if tx.Total < 0 {
 				a.invested += -tx.Total
@@ -296,7 +296,7 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
 				bucket[tx.Symbol] = a
 			}
 			switch tx.TradeType {
-			case TradeTypePurchase:
+			case TradeTypeBuy:
 				a.shares += tx.Shares
 				if tx.Total < 0 {
 					a.invested += -tx.Total

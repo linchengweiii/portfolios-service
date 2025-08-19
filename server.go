@@ -1,12 +1,17 @@
 package main
 
 import (
-	"encoding/json"
-	"io"
-	"net/http"
-	"strconv"
-	"strings"
+    "encoding/json"
+    "io"
+    "net/http"
+    "strconv"
+    "strings"
+    "embed"
+    fs "io/fs"
 )
+
+//go:embed frontend/*
+var static embed.FS
 
 // ===== HTTP adapter =====
 
@@ -17,27 +22,47 @@ type Server struct {
 }
 
 func NewServer(pf *PortfolioService, tx *TransactionService) *Server {
-	s := &Server{pf: pf, tx: tx, mux: http.NewServeMux()}
-	s.routes()
-	return s
+    s := &Server{pf: pf, tx: tx, mux: http.NewServeMux()}
+    s.routes()
+    return s
 }
 
 func (s *Server) routes() {
-	// Global endpoints (all portfolios)
-	s.mux.HandleFunc("/allocations", s.handleAllocationsAll) // GET
-	s.mux.HandleFunc("/summary", s.handleSummaryAll)         // GET
+    // Global endpoints (all portfolios)
+    s.mux.HandleFunc("/allocations", s.handleAllocationsAll) // GET
+    s.mux.HandleFunc("/summary", s.handleSummaryAll)         // GET
+    s.mux.HandleFunc("/backtest", s.handleBacktestAll)       // GET
 
 	// Root collection for portfolios (exact path)
 	s.mux.HandleFunc("/portfolios", s.handlePortfolios)
 
-	// Single subtree handler for everything under /portfolios/
-	s.mux.HandleFunc("/portfolios/", s.handlePortfoliosSub)
+    // Single subtree handler for everything under /portfolios/
+    s.mux.HandleFunc("/portfolios/", s.handlePortfoliosSub)
+
+    // Static frontend: served at /app/ (embedded)
+    sub, err := fs.Sub(static, "frontend")
+    if err == nil {
+        s.mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.FS(sub))))
+    } else {
+        // Fallback to local dir in dev
+        s.mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.Dir("frontend"))))
+    }
+    // Redirect /app -> /app/
+    s.mux.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, "/app/", http.StatusPermanentRedirect)
+    })
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Simple JSON-only API
-	w.Header().Set("Content-Type", "application/json")
-	s.mux.ServeHTTP(w, r)
+    // Permissive CORS for frontend dev
+    w.Header().Set("Access-Control-Allow-Origin", "*")
+    w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
+    w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept")
+    if r.Method == http.MethodOptions {
+        w.WriteHeader(http.StatusNoContent)
+        return
+    }
+    s.mux.ServeHTTP(w, r)
 }
 
 /* ======= Global endpoints ======= */
@@ -72,6 +97,34 @@ func (s *Server) handleSummaryAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// GET /backtest?symbol={symbol}  (across ALL portfolios)
+func (s *Server) handleBacktestAll(w http.ResponseWriter, r *http.Request) {
+    if r.Method != http.MethodGet {
+        httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+        return
+    }
+    symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
+    if symbol == "" {
+        httpError(w, http.StatusBadRequest, "symbol is required")
+        return
+    }
+    symbolCCY := strings.TrimSpace(r.URL.Query().Get("symbol_ccy"))
+    if symbolCCY == "" {
+        symbolCCY = "USD"
+    }
+    priceBasis := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("price_basis")))
+    if priceBasis != "open" { // default to close
+        priceBasis = "close"
+    }
+    debug := strings.TrimSpace(r.URL.Query().Get("debug")) == "1"
+    out, err := s.tx.ComputeBacktestAll(symbol, symbolCCY, priceBasis, debug)
+    if err != nil {
+        httpError(w, http.StatusBadRequest, err.Error())
+        return
+    }
+    writeJSON(w, http.StatusOK, out)
 }
 
 /* ======= Portfolios root ======= */
@@ -254,6 +307,60 @@ func (s *Server) handlePortfoliosSub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Case D: /portfolios/{id}/summary
+	if len(parts) == 2 && parts[1] == "summary" {
+		if r.Method != http.MethodGet {
+			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		pfID := parts[0]
+		out, err := s.tx.ComputeSummary(pfID)
+		if err != nil {
+			status := http.StatusBadRequest
+			if err == ErrPortfolioNotFound {
+				status = http.StatusNotFound
+			}
+			httpError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	// Case E: /portfolios/{id}/backtest
+	if len(parts) == 2 && parts[1] == "backtest" {
+		if r.Method != http.MethodGet {
+			httpError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+		pfID := parts[0]
+        symbol := strings.TrimSpace(r.URL.Query().Get("symbol"))
+        if symbol == "" {
+            httpError(w, http.StatusBadRequest, "symbol is required")
+            return
+        }
+        symbolCCY := strings.TrimSpace(r.URL.Query().Get("symbol_ccy"))
+        if symbolCCY == "" {
+            symbolCCY = "USD"
+        }
+        priceBasis := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("price_basis")))
+        if priceBasis != "open" {
+            priceBasis = "close"
+        }
+        debug := strings.TrimSpace(r.URL.Query().Get("debug")) == "1"
+        out, err := s.tx.ComputeBacktest(pfID, symbol, symbolCCY, priceBasis, debug)
+        if err != nil {
+            status := http.StatusBadRequest
+            if err == ErrPortfolioNotFound {
+                status = http.StatusNotFound
+            }
+			httpError(w, status, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
 	http.NotFound(w, r)
 }
 
@@ -336,16 +443,18 @@ func (s *Server) listTx(pfID string, w http.ResponseWriter, r *http.Request) {
 /* ======= small helpers ======= */
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(v)
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    _ = json.NewEncoder(w).Encode(v)
 }
 
 func httpError(w http.ResponseWriter, status int, msg string) {
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"error":  http.StatusText(status),
-		"detail": msg,
-	})
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(status)
+    _ = json.NewEncoder(w).Encode(map[string]any{
+        "error":  http.StatusText(status),
+        "detail": msg,
+    })
 }
 
 func atoiDefault(s string, def int) int {

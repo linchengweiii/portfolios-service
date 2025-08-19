@@ -7,9 +7,10 @@ import "time"
 type TradeType string
 
 const (
-	TradeTypeBuy      TradeType = "buy"
-	TradeTypeSell     TradeType = "sell"
-	TradeTypeDividend TradeType = "dividend"
+    TradeTypeBuy      TradeType = "buy"
+    TradeTypeSell     TradeType = "sell"
+    TradeTypeDividend TradeType = "dividend"
+    TradeTypeCash     TradeType = "cash"
 )
 
 type Portfolio struct {

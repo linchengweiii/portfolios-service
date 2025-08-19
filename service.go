@@ -180,36 +180,57 @@ func (s *TransactionService) ComputeAllocationsAll(basis string) (AllocationResp
 }
 
 func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis string) (AllocationResponse, error) {
-	type agg struct {
-		shares   float64
-		invested float64 // already converted into ref currency
-		currency string  // last seen tx currency for the symbol
-	}
-	bucket := map[string]*agg{}
+    type agg struct {
+        shares   float64
+        invested float64 // cost of remaining shares in ref currency (after sells reduce by avg cost)
+        currency string  // last seen tx currency for the symbol
+    }
+    bucket := map[string]*agg{}
 
-	for _, tx := range all {
-		a := bucket[tx.Symbol]
-		if a == nil {
-			a = &agg{}
-			bucket[tx.Symbol] = a
-		}
-		if tx.Currency != "" {
-			a.currency = strings.ToUpper(tx.Currency)
-		}
-		switch tx.TradeType {
-		case TradeTypeBuy:
-			a.shares += tx.Shares
-			amt := tx.Total
-			if amt < 0 {
-				amt = -amt
-			}
-			a.invested += amt * s.rate(tx.Currency)
-		case TradeTypeSell:
-			a.shares -= tx.Shares
-		case TradeTypeDividend:
-			// ignore for allocation
-		}
-	}
+    // Process in chronological order so average-cost reductions on sell are correct
+    insertionSort(all, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
+
+    for _, tx := range all {
+        switch tx.TradeType {
+        case TradeTypeBuy, TradeTypeSell, TradeTypeDividend:
+            a := bucket[tx.Symbol]
+            if a == nil {
+                a = &agg{}
+                bucket[tx.Symbol] = a
+            }
+            if tx.Currency != "" {
+                a.currency = strings.ToUpper(tx.Currency)
+            }
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                a.shares += tx.Shares
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                a.invested += amt * s.rate(tx.Currency)
+            case TradeTypeSell:
+                // Reduce invested by average cost per share for the shares sold
+                if a.shares > 0 {
+                    avgCost := 0.0
+                    if a.shares > 0 {
+                        avgCost = a.invested / a.shares
+                    }
+                    sellShares := tx.Shares
+                    if sellShares > a.shares {
+                        sellShares = a.shares
+                    }
+                    a.invested -= avgCost * sellShares
+                    if a.invested < 0 {
+                        a.invested = 0
+                    }
+                }
+                a.shares -= tx.Shares
+            case TradeTypeDividend:
+                // no change to invested/shares
+            }
+        }
+    }
 
 	items := make([]AllocationItem, 0, len(bucket))
 	switch strings.ToLower(basis) {
@@ -291,111 +312,787 @@ type PositionSummary struct {
 }
 
 type SummaryResponse struct {
-	AsOf                  time.Time         `json:"as_of"`
-	RefCurrency           string            `json:"ref_currency"`
-	TotalInvested         float64           `json:"total_invested"`
-	TotalMarketValue      float64           `json:"total_market_value"`
-	TotalUnrealizedPL     float64           `json:"total_unrealized_pl"`
-	TotalUnrealizedPLPerc float64           `json:"total_unrealized_pl_percent"`
-	Positions             []PositionSummary `json:"positions"`
+    AsOf                  time.Time         `json:"as_of"`
+    RefCurrency           string            `json:"ref_currency"`
+    TotalInvested         float64           `json:"total_invested"`
+    TotalMarketValue      float64           `json:"total_market_value"`
+    TotalUnrealizedPL     float64           `json:"total_unrealized_pl"`
+    TotalUnrealizedPLPerc float64           `json:"total_unrealized_pl_percent"`
+    TotalUnrealizedPLPercCurrent float64    `json:"total_unrealized_pl_percent_current,omitempty"`
+    DailyPL               float64           `json:"daily_pl,omitempty"`
+    DailyPLPercent        float64           `json:"daily_pl_percent,omitempty"`
+    Balance               float64           `json:"balance"`
+    CashDeposits          float64           `json:"cash_deposits,omitempty"`
+    CashWithdrawals       float64           `json:"cash_withdrawals,omitempty"`
+    InferredDeposits      float64           `json:"inferred_deposits,omitempty"`
+    EffectiveCashIn       float64           `json:"effective_cash_in,omitempty"`
+    EffectiveCashInPeak   float64           `json:"effective_cash_in_peak,omitempty"`
+    Positions             []PositionSummary `json:"positions"`
 }
 
 // Overall (all portfolios). P/L here is UNREALIZED = MV − invested.
 // "Invested" = sum ABS(purchase totals) converted to refCCY; sells don't reduce invested.
 // Also: drop positions with zero shares (your request).
 func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
-	if s.prices == nil {
-		return SummaryResponse{}, errors.New("no PriceProvider configured (required for summary)")
-	}
-	pfs, err := s.repoPf.List()
-	if err != nil {
-		return SummaryResponse{}, err
-	}
+    if s.prices == nil {
+        return SummaryResponse{}, errors.New("no PriceProvider configured (required for summary)")
+    }
+    pfs, err := s.repoPf.List()
+    if err != nil {
+        return SummaryResponse{}, err
+    }
+    // Build positions across all portfolios and compute per-portfolio balances (assuming no withdrawals)
+    type agg struct {
+        shares   float64
+        invested float64
+        currency string
+    }
+    bucket := map[string]*agg{}
+    var sumBalance float64
+    var sumDeposits float64
+    var sumWithdrawals float64
+    var sumInferred float64
+    var sumEffectiveIn float64
+    var sumPeakIn float64
+    for _, pf := range pfs {
+        txs, err := s.repoTx.List(pf.ID, ListFilter{Limit: 0})
+        if err != nil {
+            return SummaryResponse{}, err
+        }
+        // accumulate per-portfolio cash stats
+        cs := s.computeCashStats(txs)
+        sumBalance += cs.balance
+        sumDeposits += cs.deposits
+        sumWithdrawals += cs.withdrawals
+        sumInferred += cs.inferred
+        sumEffectiveIn += cs.effectiveIn
+        sumPeakIn += cs.peakContrib
+        // accumulate positions using average cost
+        insertionSort(txs, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
+        for _, tx := range txs {
+            switch tx.TradeType {
+            case TradeTypeBuy, TradeTypeSell, TradeTypeDividend:
+                a := bucket[tx.Symbol]
+                if a == nil {
+                    a = &agg{}
+                    bucket[tx.Symbol] = a
+                }
+                if tx.Currency != "" {
+                    a.currency = strings.ToUpper(tx.Currency)
+                }
+                switch tx.TradeType {
+                case TradeTypeBuy:
+                    a.shares += tx.Shares
+                    amt := tx.Total
+                    if amt < 0 {
+                        amt = -amt
+                    }
+                    a.invested += amt * s.rate(tx.Currency)
+                case TradeTypeSell:
+                    if a.shares > 0 {
+                        avgCost := 0.0
+                        if a.shares > 0 {
+                            avgCost = a.invested / a.shares
+                        }
+                        sellShares := tx.Shares
+                        if sellShares > a.shares {
+                            sellShares = a.shares
+                        }
+                        a.invested -= avgCost * sellShares
+                        if a.invested < 0 {
+                            a.invested = 0
+                        }
+                    }
+                    a.shares -= tx.Shares
+                case TradeTypeDividend:
+                    // no effect on invested/shares
+                }
+            }
+        }
+    }
 
-	type agg struct {
-		shares   float64
-		invested float64 // in ref currency
-		currency string
-	}
-	bucket := map[string]*agg{}
+    out := SummaryResponse{RefCurrency: s.refCCY}
+    var totalMV, totalInv float64
+    var asOf time.Time
+    var dailyPL float64
+    var prevMV float64
+    positions := make([]PositionSummary, 0, len(bucket))
+    for sym, a := range bucket {
+        if a.shares <= 0 {
+            continue
+        }
+        price, ts, err := s.prices.GetPrice(sym)
+        if err != nil {
+            continue
+        }
+        mv := a.shares * price * s.rate(a.currency)
+        pl := mv - a.invested
+        plPct := 0.0
+        if a.invested > 0 {
+            plPct = (pl / a.invested) * 100.0
+        }
+        positions = append(positions, PositionSummary{
+            Symbol:              sym,
+            Shares:              a.shares,
+            Invested:            a.invested,
+            MarketValue:         mv,
+            UnrealizedPL:        pl,
+            UnrealizedPLPercent: plPct,
+        })
+        totalMV += mv
+        totalInv += a.invested
+        if ts.After(asOf) {
+            asOf = ts
+        }
 
-	for _, pf := range pfs {
-		txs, err := s.repoTx.List(pf.ID, ListFilter{Limit: 0})
-		if err != nil {
-			return SummaryResponse{}, err
-		}
-		for _, tx := range txs {
-			a := bucket[tx.Symbol]
-			if a == nil {
-				a = &agg{}
-				bucket[tx.Symbol] = a
-			}
-			if tx.Currency != "" {
-				a.currency = strings.ToUpper(tx.Currency)
-			}
-			switch tx.TradeType {
-			case TradeTypeBuy:
-				a.shares += tx.Shares
-				amt := tx.Total
-				if amt < 0 {
-					amt = -amt
-				}
-				a.invested += amt * s.rate(tx.Currency)
-			case TradeTypeSell:
-				a.shares -= tx.Shares
-			case TradeTypeDividend:
-				// ignore
-			}
-		}
-	}
+        // Daily P/L = shares * (close_today - close_prev) converted to ref currency
+        if hp, ok := s.prices.(HistoryProvider); ok {
+            today := time.Now().UTC()
+            cur, asOfDay, err1 := hp.GetPriceOn(sym, today)
+            if err1 == nil && cur > 0 {
+                prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1))
+                if err2 == nil && prev > 0 {
+                    rate := s.rate(a.currency)
+                    dailyPL += a.shares * (cur - prev) * rate
+                    prevMV += a.shares * prev * rate
+                }
+            }
+        }
+    }
+    for i := range positions {
+        if totalMV > 0 {
+            positions[i].WeightPercentByMV = (positions[i].MarketValue / totalMV) * 100.0
+        }
+    }
+    out.AsOf = asOf
+    out.TotalInvested = totalInv
+    out.TotalMarketValue = totalMV
+    // Cash-based P/L = Equity - EffectiveCashIn
+    effectiveCashIn := sumEffectiveIn
+    peakCashIn := sumPeakIn
+    equity := totalMV + sumBalance
+    out.TotalUnrealizedPL = equity - effectiveCashIn
+    out.DailyPL = dailyPL
+    if prevMV > 0 {
+        out.DailyPLPercent = (dailyPL / prevMV) * 100.0
+    }
+    out.Balance = sumBalance
+    out.CashDeposits = sumDeposits
+    out.CashWithdrawals = sumWithdrawals
+    out.InferredDeposits = sumInferred
+    out.EffectiveCashIn = effectiveCashIn
+    out.EffectiveCashInPeak = peakCashIn
+    if peakCashIn > 0 {
+        out.TotalUnrealizedPLPerc = (out.TotalUnrealizedPL / peakCashIn) * 100.0
+    }
+    if effectiveCashIn > 0 {
+        out.TotalUnrealizedPLPercCurrent = (out.TotalUnrealizedPL / effectiveCashIn) * 100.0
+    }
+    out.Positions = positions
+    return out, nil
+}
 
-	out := SummaryResponse{RefCurrency: s.refCCY}
-	var totalMV, totalInv float64
-	var asOf time.Time
+// Per-portfolio summary
+func (s *TransactionService) ComputeSummary(portfolioID string) (SummaryResponse, error) {
+    if s.prices == nil {
+        return SummaryResponse{}, errors.New("no PriceProvider configured (required for summary)")
+    }
+    if _, err := s.repoPf.GetByID(portfolioID); err != nil {
+        return SummaryResponse{}, ErrPortfolioNotFound
+    }
+    txs, err := s.repoTx.List(portfolioID, ListFilter{Limit: 0})
+    if err != nil {
+        return SummaryResponse{}, err
+    }
+    return s.computeSummaryFromTxs(txs)
+}
 
-	positions := make([]PositionSummary, 0, len(bucket))
-	for sym, a := range bucket {
-		if a.shares <= 0 { // remove any stock with no shares
-			continue
-		}
-		price, ts, err := s.prices.GetPrice(sym)
-		if err != nil {
-			continue
-		}
-		mv := a.shares * price * s.rate(a.currency)
-		pl := mv - a.invested
-		plPct := 0.0
-		if a.invested > 0 {
-			plPct = (pl / a.invested) * 100.0
-		}
-		positions = append(positions, PositionSummary{
-			Symbol:              sym,
-			Shares:              a.shares,
-			Invested:            a.invested,
-			MarketValue:         mv,
-			UnrealizedPL:        pl,
-			UnrealizedPLPercent: plPct,
-		})
-		totalMV += mv
-		totalInv += a.invested
-		if ts.After(asOf) {
-			asOf = ts
-		}
-	}
+// Shared summary computation from a list of transactions.
+func (s *TransactionService) computeSummaryFromTxs(allTx []Transaction) (SummaryResponse, error) {
+    type agg struct {
+        shares   float64
+        invested float64 // cost of remaining shares in ref currency (after sells reduce by avg cost)
+        currency string  // last seen tx currency for the symbol
+    }
+    bucket := map[string]*agg{}
 
-	for i := range positions {
-		if totalMV > 0 {
-			positions[i].WeightPercentByMV = (positions[i].MarketValue / totalMV) * 100.0
-		}
-	}
+    // Sort by date for correct average cost handling on sells
+    insertionSort(allTx, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
 
-	out.AsOf = asOf
-	out.TotalInvested = totalInv
-	out.TotalMarketValue = totalMV
-	out.TotalUnrealizedPL = totalMV - totalInv
-	if totalInv > 0 {
-		out.TotalUnrealizedPLPerc = ((totalMV - totalInv) / totalInv) * 100.0
-	}
-	out.Positions = positions
-	return out, nil
+    for _, tx := range allTx {
+        // Position aggregation (ignore cash)
+        switch tx.TradeType {
+        case TradeTypeBuy, TradeTypeSell, TradeTypeDividend:
+            a := bucket[tx.Symbol]
+            if a == nil {
+                a = &agg{}
+                bucket[tx.Symbol] = a
+            }
+            if tx.Currency != "" {
+                a.currency = strings.ToUpper(tx.Currency)
+            }
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                a.shares += tx.Shares
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                a.invested += amt * s.rate(tx.Currency)
+            case TradeTypeSell:
+                // Reduce invested by average cost per share for the shares sold
+                if a.shares > 0 {
+                    avgCost := 0.0
+                    if a.shares > 0 {
+                        avgCost = a.invested / a.shares
+                    }
+                    sellShares := tx.Shares
+                    if sellShares > a.shares {
+                        sellShares = a.shares
+                    }
+                    a.invested -= avgCost * sellShares
+                    if a.invested < 0 {
+                        a.invested = 0
+                    }
+                }
+                a.shares -= tx.Shares
+            case TradeTypeDividend:
+                // no change to invested/shares
+            }
+        }
+    }
+
+    out := SummaryResponse{RefCurrency: s.refCCY}
+    var totalMV, totalInv float64
+    var asOf time.Time
+    var dailyPL float64
+    var prevMV float64
+    positions := make([]PositionSummary, 0, len(bucket))
+    for sym, a := range bucket {
+        if a.shares <= 0 {
+            continue
+        }
+        price, ts, err := s.prices.GetPrice(sym)
+        if err != nil {
+            continue
+        }
+        mv := a.shares * price * s.rate(a.currency)
+        pl := mv - a.invested
+        plPct := 0.0
+        if a.invested > 0 {
+            plPct = (pl / a.invested) * 100.0
+        }
+        positions = append(positions, PositionSummary{
+            Symbol:              sym,
+            Shares:              a.shares,
+            Invested:            a.invested,
+            MarketValue:         mv,
+            UnrealizedPL:        pl,
+            UnrealizedPLPercent: plPct,
+        })
+        totalMV += mv
+        totalInv += a.invested
+        if ts.After(asOf) {
+            asOf = ts
+        }
+
+        // Daily P/L = shares * (close_today - close_prev) converted to ref currency
+        if hp, ok := s.prices.(HistoryProvider); ok {
+            today := time.Now().UTC()
+            cur, asOfDay, err1 := hp.GetPriceOn(sym, today)
+            if err1 == nil && cur > 0 {
+                prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1))
+                if err2 == nil && prev > 0 {
+                    rate := s.rate(a.currency)
+                    dailyPL += a.shares * (cur - prev) * rate
+                    prevMV += a.shares * prev * rate
+                }
+            }
+        }
+    }
+
+    for i := range positions {
+        if totalMV > 0 {
+            positions[i].WeightPercentByMV = (positions[i].MarketValue / totalMV) * 100.0
+        }
+    }
+
+    out.AsOf = asOf
+    out.TotalInvested = totalInv
+    out.TotalMarketValue = totalMV
+    out.TotalUnrealizedPL = totalMV - totalInv
+
+    // Cash-based stats (deposits/withdrawals/inferred/balance)
+    cs := s.computeCashStats(allTx)
+    out.Balance = cs.balance
+    out.CashDeposits = cs.deposits
+    out.CashWithdrawals = cs.withdrawals
+    out.InferredDeposits = cs.inferred
+    out.EffectiveCashIn = cs.effectiveIn
+    out.EffectiveCashInPeak = cs.peakContrib
+    // Cash-based P/L = Equity - EffectiveCashIn (current-basis).
+    effectiveCashIn := cs.effectiveIn
+    equity := out.TotalMarketValue + out.Balance
+    out.TotalUnrealizedPL = equity - effectiveCashIn
+    out.DailyPL = dailyPL
+    if prevMV > 0 {
+        out.DailyPLPercent = (dailyPL / prevMV) * 100.0
+    }
+    if cs.peakContrib > 0 {
+        out.TotalUnrealizedPLPerc = (out.TotalUnrealizedPL / cs.peakContrib) * 100.0
+    }
+    if effectiveCashIn > 0 {
+        out.TotalUnrealizedPLPercCurrent = (out.TotalUnrealizedPL / effectiveCashIn) * 100.0
+    }
+    out.Positions = positions
+    return out, nil
+}
+
+// inferBalance computes the ending balance assuming no withdrawals, and
+// injecting the minimal deposits needed so the running balance never goes below zero.
+func (s *TransactionService) inferBalance(txs []Transaction) float64 {
+    if len(txs) == 0 {
+        return 0
+    }
+    // Copy and sort by date; for same date, place inflows before outflows
+    xs := make([]Transaction, len(txs))
+    copy(xs, txs)
+    insertionSort(xs, func(a, b Transaction) bool {
+        if a.Date.Before(b.Date) {
+            return true
+        }
+        if a.Date.After(b.Date) {
+            return false
+        }
+        // Same timestamp: inflows before outflows to maximize non-negative balance
+        deltaA := func(tx Transaction) float64 {
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return -amt * s.rate(tx.Currency)
+            case TradeTypeSell:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return +amt * s.rate(tx.Currency)
+            case TradeTypeDividend:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return +amt * s.rate(tx.Currency)
+            case TradeTypeCash:
+                return tx.Total * s.rate(tx.Currency)
+            default:
+                return 0
+            }
+        }
+        da := deltaA(a)
+        db := deltaA(b)
+        if da == db {
+            // deterministic tie-breaker
+            return a.ID < b.ID
+        }
+        // Want inflows (positive delta) before outflows (negative delta)
+        return da > db
+    })
+
+    var sum float64
+    var prefix float64
+    var minPrefix float64
+    for _, tx := range xs {
+        var delta float64
+        switch tx.TradeType {
+        case TradeTypeBuy:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = -amt * s.rate(tx.Currency)
+        case TradeTypeSell:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = +amt * s.rate(tx.Currency)
+        case TradeTypeDividend:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = +amt * s.rate(tx.Currency)
+        case TradeTypeCash:
+            // Deposits positive, withdrawals negative as provided
+            delta = tx.Total * s.rate(tx.Currency)
+        default:
+            delta = 0
+        }
+        sum += delta
+        prefix += delta
+        if prefix < minPrefix {
+            minPrefix = prefix
+        }
+    }
+    inferredDeposit := 0.0
+    if minPrefix < 0 {
+        inferredDeposit = -minPrefix
+    }
+    return inferredDeposit + sum
+}
+
+type cashStats struct {
+    deposits    float64
+    withdrawals float64
+    inferred    float64
+    balance     float64
+    effectiveIn float64
+    peakContrib float64
+    inferredEvents   []cashEvent
+    depositEvents    []cashEvent
+    withdrawalEvents []cashEvent
+}
+
+// computeCashStats sorts the transactions by date (inflows before outflows within the same date),
+// computes deposits, withdrawals, minimal inferred deposits to avoid negative balance, and ending balance.
+func (s *TransactionService) computeCashStats(txs []Transaction) cashStats {
+    if len(txs) == 0 {
+        return cashStats{}
+    }
+    xs := make([]Transaction, len(txs))
+    copy(xs, txs)
+    // Sort with inflows before outflows at equal timestamps
+    insertionSort(xs, func(a, b Transaction) bool {
+        if a.Date.Before(b.Date) {
+            return true
+        }
+        if a.Date.After(b.Date) {
+            return false
+        }
+        deltaA := func(tx Transaction) float64 {
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return -amt * s.rate(tx.Currency)
+            case TradeTypeSell:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return +amt * s.rate(tx.Currency)
+            case TradeTypeDividend:
+                amt := tx.Total
+                if amt < 0 {
+                    amt = -amt
+                }
+                return +amt * s.rate(tx.Currency)
+            case TradeTypeCash:
+                return tx.Total * s.rate(tx.Currency)
+            default:
+                return 0
+            }
+        }
+        da := deltaA(a)
+        db := deltaA(b)
+        if da == db {
+            return a.ID < b.ID
+        }
+        return da > db
+    })
+
+    var sum float64            // running cash balance
+    var prefix float64         // same as sum, kept for clarity
+    var minPrefix float64
+    var deposits float64
+    var withdrawals float64
+    var contribPrefix float64  // running net contributions (deposits - withdrawals + inferred)
+    var peakContrib float64
+    var inferredTotal float64
+    var inferredEvents []cashEvent
+    var depositEvents []cashEvent
+    var withdrawalEvents []cashEvent
+    for _, tx := range xs {
+        var delta float64
+        switch tx.TradeType {
+        case TradeTypeBuy:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = -amt * s.rate(tx.Currency)
+        case TradeTypeSell:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = +amt * s.rate(tx.Currency)
+        case TradeTypeDividend:
+            amt := tx.Total
+            if amt < 0 {
+                amt = -amt
+            }
+            delta = +amt * s.rate(tx.Currency)
+        case TradeTypeCash:
+            v := tx.Total * s.rate(tx.Currency)
+            delta = v
+            if v >= 0 {
+                deposits += v
+                contribPrefix += v
+                depositEvents = append(depositEvents, cashEvent{when: tx.Date, amount: v})
+            } else {
+                w := -v
+                withdrawals += w
+                contribPrefix -= w
+                if contribPrefix < 0 {
+                    contribPrefix = 0 // don't let net contributions go negative
+                }
+                withdrawalEvents = append(withdrawalEvents, cashEvent{when: tx.Date, amount: w})
+            }
+        }
+        // Before applying delta, if it would take balance negative, inject minimal inferred deposit
+        if prefix+delta < 0 {
+            need := -(prefix + delta)
+            inferredTotal += need
+            contribPrefix += need
+            prefix += need
+            sum += need
+            inferredEvents = append(inferredEvents, cashEvent{when: tx.Date, amount: need})
+        }
+        sum += delta
+        prefix += delta
+        if prefix < minPrefix {
+            minPrefix = prefix
+        }
+        if contribPrefix > peakContrib {
+            peakContrib = contribPrefix
+        }
+    }
+    inferred := inferredTotal
+    return cashStats{
+        deposits:    deposits,
+        withdrawals: withdrawals,
+        inferred:    inferred,
+        balance:     sum, // inferred was already injected during the run
+        effectiveIn: deposits - withdrawals + inferred,
+        peakContrib: peakContrib,
+        inferredEvents:   inferredEvents,
+        depositEvents:    depositEvents,
+        withdrawalEvents: withdrawalEvents,
+    }
+}
+
+type cashEvent struct {
+    when   time.Time
+    amount float64 // always positive magnitude in ref currency
+}
+
+// Backtest result comparing alternate asset vs current portfolio
+type BacktestResponse struct {
+    Symbol          string    `json:"symbol"`
+    AsOf            time.Time `json:"as_of"`
+    RefCurrency     string    `json:"ref_currency"`
+    AltPL           float64   `json:"alt_pl"`
+    AltPLPercent    float64   `json:"alt_pl_percent"`
+    CurrentPL       float64   `json:"current_pl"`
+    CurrentPLPercent float64  `json:"current_pl_percent"`
+    Debug           *BacktestDebug `json:"debug,omitempty"`
+}
+
+type BacktestEventDebug struct {
+    When         time.Time `json:"when"`
+    Kind         string    `json:"kind"` // deposit | withdrawal
+    AmountRef    float64   `json:"amount_ref"`
+    Price        float64   `json:"price"`
+    PriceAsOf    time.Time `json:"price_as_of"`
+    SharesDelta  float64   `json:"shares_delta"`
+    SharesTotal  float64   `json:"shares_total"`
+    EquityRef    float64   `json:"equity_ref_after"`
+}
+
+type BacktestDebug struct {
+    Events []BacktestEventDebug `json:"events"`
+}
+
+// Per-portfolio backtest
+func (s *TransactionService) ComputeBacktest(portfolioID, symbol, symbolCCY, priceBasis string, debug bool) (BacktestResponse, error) {
+    if _, err := s.repoPf.GetByID(portfolioID); err != nil {
+        return BacktestResponse{}, ErrPortfolioNotFound
+    }
+    txs, err := s.repoTx.List(portfolioID, ListFilter{Limit: 0})
+    if err != nil {
+        return BacktestResponse{}, err
+    }
+    return s.computeBacktestFromTxs(txs, symbol, symbolCCY, priceBasis, debug)
+}
+
+// Global backtest
+func (s *TransactionService) ComputeBacktestAll(symbol, symbolCCY, priceBasis string, debug bool) (BacktestResponse, error) {
+    pfs, err := s.repoPf.List()
+    if err != nil {
+        return BacktestResponse{}, err
+    }
+    var all []Transaction
+    for _, pf := range pfs {
+        txs, err := s.repoTx.List(pf.ID, ListFilter{Limit: 0})
+        if err != nil {
+            return BacktestResponse{}, err
+        }
+        all = append(all, txs...)
+    }
+    return s.computeBacktestFromTxs(all, symbol, symbolCCY, priceBasis, debug)
+}
+
+func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol, symbolCCY, priceBasis string, debug bool) (BacktestResponse, error) {
+    if s.prices == nil {
+        return BacktestResponse{}, errors.New("no PriceProvider configured (required for backtest)")
+    }
+    // Cash schedule from actual portfolio
+    cs := s.computeCashStats(allTx)
+
+    // Simulate investing contributions (explicit deposits + inferred) into the alt symbol
+    // and selling to meet explicit withdrawals.
+    var evs []backtestEvent
+    for _, e := range cs.depositEvents {
+        evs = append(evs, backtestEvent{when: e.when, kind: "deposit", amount: e.amount})
+    }
+    for _, e := range cs.inferredEvents {
+        evs = append(evs, backtestEvent{when: e.when, kind: "deposit", amount: e.amount})
+    }
+    for _, e := range cs.withdrawalEvents {
+        evs = append(evs, backtestEvent{when: e.when, kind: "withdrawal", amount: e.amount})
+    }
+    insertionSortEvents(evs)
+
+    // helpers for pricing on date
+    getOn := func(d time.Time) (float64, time.Time, error) {
+        if hp, ok := s.prices.(HistoryProvider); ok {
+            // Toggle basis when supported by provider
+            if yp, ok2 := s.prices.(*YahooProvider); ok2 && (priceBasis == "open" || priceBasis == "close") {
+                p, asOf, err := yp.GetPriceOnBasis(symbol, d, priceBasis)
+                if err == nil && p > 0 {
+                    return p, asOf, nil
+                }
+            } else {
+                p, asOf, err := hp.GetPriceOn(symbol, d)
+                if err == nil && p > 0 {
+                    return p, asOf, nil
+                }
+            }
+        }
+        p, asOf, err := s.prices.GetPrice(symbol)
+        return p, asOf, err
+    }
+
+    var shares float64
+    rateSymToRef := s.rate(symbolCCY)
+    if rateSymToRef <= 0 {
+        rateSymToRef = 1.0
+    }
+    var dbg BacktestDebug
+    for _, e := range evs {
+        price, asOf, err := getOn(e.when)
+        if err != nil || price <= 0 {
+            continue
+        }
+        var sharesDelta float64
+        switch e.kind {
+        case "deposit":
+            // Convert contribution from ref currency into symbol currency
+            amtSym := e.amount / rateSymToRef
+            sharesDelta = amtSym / price
+            shares += sharesDelta
+        case "withdrawal":
+            amtSym := e.amount / rateSymToRef
+            qty := amtSym / price
+            sharesDelta = -qty
+            shares -= qty
+            if shares < 0 {
+                shares = 0
+            }
+        }
+        if debug {
+            equityRef := shares * price * rateSymToRef
+            dbg.Events = append(dbg.Events, BacktestEventDebug{
+                When:        e.when,
+                Kind:        e.kind,
+                AmountRef:   e.amount,
+                Price:       price,
+                PriceAsOf:   asOf,
+                SharesDelta: sharesDelta,
+                SharesTotal: shares,
+                EquityRef:   equityRef,
+            })
+        }
+    }
+    curPrice, _, err := s.prices.GetPrice(symbol)
+    if err != nil || curPrice <= 0 {
+        return BacktestResponse{}, errors.New("failed to price backtest symbol")
+    }
+    // Alt equity in ref currency
+    altEquity := shares * curPrice * rateSymToRef
+
+    // Compare vs contributions
+    altPL := altEquity - cs.effectiveIn
+    altPct := 0.0
+    if cs.peakContrib > 0 {
+        altPct = (altPL / cs.peakContrib) * 100.0
+    }
+
+    // Current portfolio P/L using our summary computation
+    sum, err := s.computeSummaryFromTxs(allTx)
+    if err != nil {
+        return BacktestResponse{}, err
+    }
+
+    resp := BacktestResponse{
+        Symbol:           strings.ToUpper(strings.TrimSpace(symbol)),
+        AsOf:             sum.AsOf,
+        RefCurrency:      s.refCCY,
+        AltPL:            altPL,
+        AltPLPercent:     altPct,
+        CurrentPL:        sum.TotalUnrealizedPL,
+        CurrentPLPercent: sum.TotalUnrealizedPLPerc,
+    }
+    if debug {
+        resp.Debug = &dbg
+    }
+    return resp, nil
+}
+
+func insertionSortEvents(xs []backtestEvent) {
+    less := func(a, b backtestEvent) bool {
+        if a.when.Before(b.when) {
+            return true
+        }
+        if a.when.After(b.when) {
+            return false
+        }
+        // inflows before outflows on same day
+        if a.kind == b.kind {
+            return false
+        }
+        if a.kind == "deposit" && b.kind == "withdrawal" {
+            return true
+        }
+        return false
+    }
+    for i := 1; i < len(xs); i++ {
+        j := i
+        for j > 0 && less(xs[j], xs[j-1]) {
+            xs[j], xs[j-1] = xs[j-1], xs[j]
+            j--
+        }
+    }
+}
+
+type backtestEvent struct {
+    when   time.Time
+    kind   string // deposit | withdrawal
+    amount float64
 }

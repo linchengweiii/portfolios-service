@@ -28,7 +28,7 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 ## Data Model Notes
 
 - Use symbol only (e.g., AMZN, BHP.AX, 7203.T).
-- trade_type: purchase | sell | dividend.
+- trade_type: buy | sell | dividend | cash.
 - date format: YYYY/MM/DD.
 - For purchases, total is usually negative (cash out). The service uses ABS(total) as invested capital.
 
@@ -52,7 +52,7 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
   ```json
   {
     "symbol": "AMZN",
-    "trade_type": "purchase",
+    "trade_type": "buy",
     "currency": "USD",
     "shares": 1.234,
     "price": 210.5,
@@ -85,9 +85,41 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 }
 ```
 
-### Summary (All portfolios)
+### Summary
 
 - **Global summary**: `GET /summary`
+- **Per-portfolio summary**: `GET /portfolios/{id}/summary`
+
+### Backtest
+
+- **Global backtest**: `GET /backtest?symbol={SYMBOL}`
+- **Per-portfolio backtest**: `GET /portfolios/{id}/backtest?symbol={SYMBOL}`
+
+Optional params:
+- `symbol_ccy`: currency of `{SYMBOL}` quotes (default `USD`).
+- `price_basis`: `open` or `close` (default `close`; backtest only).
+- `debug`: `1` to include event-by-event simulation details.
+
+Response shape:
+
+```json
+{
+  "symbol": "QQQ",
+  "as_of": "2025-08-10T00:00:00Z",
+  "ref_currency": "USD",
+  "alt_pl": 123.45,
+  "alt_pl_percent": 3.2,
+  "current_pl": 98.76,
+  "current_pl_percent": 2.5
+}
+```
+
+Rules:
+- Deposits: invest all explicit cash deposits plus inferred deposits into `{SYMBOL}` at the date of the deposit.
+- Withdrawals: sell `{SYMBOL}` to fund explicit cash withdrawals at their dates.
+- Inferred deposits: computed from your actual transactions as the minimal additions needed to prevent negative cash; they are assumed to be deposited right before the buys that required them, and are invested into `{SYMBOL}` in the backtest.
+- Prices: uses daily historical prices when available (Yahoo). If history is unavailable, falls back to the latest price for approximation.
+- Percent basis: uses peak contributed cash (deposits − withdrawals + inferred, never below zero) as denominator to avoid extreme values after withdrawals.
 
 ```json
 {
@@ -96,6 +128,15 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
   "total_market_value": 4520.0,
   "total_unrealized_pl": 209.1,
   "total_unrealized_pl_percent": 4.85,
+  "total_unrealized_pl_percent_current": 3.10,
+  "daily_pl": 12.34,
+  "daily_pl_percent": 0.27,
+  "balance": 3900.0,
+  "cash_deposits": 7000.0,
+  "cash_withdrawals": 0.0,
+  "inferred_deposits": 0.0,
+  "effective_cash_in": 7000.0,
+  "effective_cash_in_peak": 7000.0,
   "positions": [
     {
       "symbol": "AMZN",
@@ -112,6 +153,22 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 
 ## Notes
 
-- “Invested” = sum of **ABS(purchase totals)**; sells don’t reduce invested.
+- “Invested” (in summary) = cost of the shares you still hold: buys add cost; sells reduce cost using average cost per share. Dividends do not change invested.
 - Summary P/L is **unrealized**. Realized P/L support can be added later without changing the API.
+- Trade type `cash` lets you record deposits/withdrawals. It may omit `symbol`.
+  - Positive `total` = deposit; negative `total` = withdrawal (values are converted to the reference currency).
+- Balance in summary injects the minimal extra deposits needed so the running balance never goes below zero (buys negative, sells/dividends positive, cash deposits positive, cash withdrawals negative), sorted by date.
+- Cash-based P/L:
+  - P/L (summary) = MarketValue + Balance − EffectiveCashIn.
+  - EffectiveCashIn = CashDeposits − CashWithdrawals + InferredDeposits.
+  - P/L% (summary) = P/L / EffectiveCashIn × 100 (when denominator > 0).
+- Daily P/L:
+  - Sum over positions of `shares × (close_today − close_prev)` converted into the reference currency.
+  - Daily P/L% = Daily P/L divided by yesterday's market value of held positions (sum of `shares × close_prev` in ref currency) × 100.
+  - Requires a history-capable price provider (Yahoo). If unavailable, `daily_pl` may be omitted or zero.
+  - Excludes cash flows; reflects price movement only.
+- Cash stats implementation:
+  - Cash deposits/withdrawals come from `trade_type = cash` only (deposits positive, withdrawals negative). Buys/sells/dividends affect balance but are not counted as deposits/withdrawals.
+  - Transactions are sorted by date; for the same timestamp, inflows (sell/dividend/deposit) are applied before outflows (buy/withdrawal) to minimize temporary negative balances.
+  - `inferred_deposits` is the minimal extra deposit needed so the running cash balance never goes below zero (computed after ordering). This helps when some deposits are missing from data.
 - Storage is in-memory; swap to a DB by implementing the repo interfaces and wiring in `main.go`.

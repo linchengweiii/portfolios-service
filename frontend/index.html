@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portfolio Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Portfolio Dashboard</h1>
+      <div class="controls">
+        <label>API Base URL
+          <input id="baseUrl" type="text" value="http://localhost:8080" />
+        </label>
+        <button id="refreshAll">Refresh All</button>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Global Summary</h2>
+          <div class="right">
+            <label>Allocations basis
+              <select id="globalAllocBasis">
+                <option value="market_value" selected>market_value</option>
+                <option value="invested">invested</option>
+              </select>
+            </label>
+            <button id="refreshGlobal">Refresh</button>
+          </div>
+        </div>
+        <div id="globalSummary" class="grid"></div>
+        <h3>Global Allocations</h3>
+        <div id="globalBar" class="stack-wrap"></div>
+        <div id="globalAlloc" class="table-wrap"></div>
+        <div class="panel-subcontrols">
+          <h3>Backtest</h3>
+          <div class="controls">
+            <label>Symbol <input id="globalBTsymbol" type="text" placeholder="e.g., QQQ" /></label>
+            <label>Symbol CCY <input id="globalBTccy" type="text" value="USD"/></label>
+            <label>Price Basis
+              <select id="globalBTbasis">
+                <option value="close" selected>close</option>
+                <option value="open">open</option>
+              </select>
+            </label>
+            <button id="runGlobalBT">Run Backtest</button>
+          </div>
+          <div id="globalBTResult" class="grid"></div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Portfolios</h2>
+          <div class="right">
+            <label>Choose
+              <select id="portfolioSelect"></select>
+            </label>
+            <label>Allocations basis
+              <select id="pfAllocBasis">
+                <option value="market_value" selected>market_value</option>
+                <option value="invested">invested</option>
+              </select>
+            </label>
+            <button id="refreshPortfolio">Refresh</button>
+          </div>
+        </div>
+        <div id="pfSummary" class="grid"></div>
+        <h3>Portfolio Allocations</h3>
+        <div id="pfBar" class="stack-wrap"></div>
+        <div id="pfAlloc" class="table-wrap"></div>
+        <div class="panel-subcontrols">
+          <h3>Backtest</h3>
+          <div class="controls">
+            <label>Symbol <input id="pfBTsymbol" type="text" placeholder="e.g., QQQ"/></label>
+            <label>Symbol CCY <input id="pfBTccy" type="text" value="USD"/></label>
+            <label>Price Basis
+              <select id="pfBTbasis">
+                <option value="close" selected>close</option>
+                <option value="open">open</option>
+              </select>
+            </label>
+            <button id="runPfBT">Run Backtest</button>
+          </div>
+          <div id="pfBTResult" class="grid"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <small>Powered by your portfolio-service API</small>
+    </footer>
+
+    <script type="module" src="main.js"></script>
+  </body>
+  </html>

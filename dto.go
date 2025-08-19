@@ -58,20 +58,22 @@ type transactionDTO struct {
 const payloadDateLayout = "2006/01/02"
 
 func normalizeTradeType(tt TradeType) (TradeType, error) {
-	switch strings.ToLower(string(tt)) {
-	case "buy":
-		return TradeTypeBuy, nil
-	case "sell":
-		return TradeTypeSell, nil
-	case "dividend":
-		return TradeTypeDividend, nil
-	default:
-		return "", fmt.Errorf("unsupported trade_type: %q (use buy|sell|dividend)", tt)
-	}
+    switch strings.ToLower(string(tt)) {
+    case "buy":
+        return TradeTypeBuy, nil
+    case "sell":
+        return TradeTypeSell, nil
+    case "dividend":
+        return TradeTypeDividend, nil
+    case "cash":
+        return TradeTypeCash, nil
+    default:
+        return "", fmt.Errorf("unsupported trade_type: %q (use buy|sell|dividend|cash)", tt)
+    }
 }
 
 func (d transactionDTO) toDomain(now time.Time, portfolioID string, idOpt ...string) (Transaction, error) {
-	t, err := time.ParseInLocation(payloadDateLayout, d.Date, time.Local)
+    t, err := time.ParseInLocation(payloadDateLayout, d.Date, time.Local)
 	if err != nil {
 		return Transaction{}, fmt.Errorf("invalid date %q (use YYYY/MM/DD): %w", d.Date, err)
 	}
@@ -80,21 +82,21 @@ func (d transactionDTO) toDomain(now time.Time, portfolioID string, idOpt ...str
 	if len(idOpt) > 0 && idOpt[0] != "" {
 		id = idOpt[0]
 	}
-	symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
-	if symbol == "" {
-		return Transaction{}, errors.New("symbol is required")
-	}
+    tt, err := normalizeTradeType(d.TradeType)
+    if err != nil {
+        return Transaction{}, err
+    }
 
-	tt, err := normalizeTradeType(d.TradeType)
-	if err != nil {
-		return Transaction{}, err
-	}
+    symbol := strings.ToUpper(strings.TrimSpace(d.Symbol))
+    if symbol == "" && tt != TradeTypeCash {
+        return Transaction{}, errors.New("symbol is required")
+    }
 
 	return Transaction{
 		ID:          id,
 		PortfolioID: portfolioID,
 		Symbol:      symbol,
-		TradeType:   tt,
+        TradeType:   tt,
 		Currency:    d.Currency,
 		Shares:      d.Shares,
 		Price:       d.Price,

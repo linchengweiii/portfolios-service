@@ -46,24 +46,44 @@ func (s *PortfolioService) Update(id string, dto portfolioDTO) (Portfolio, error
 /* ===================== Transaction service ===================== */
 
 type TransactionService struct {
-	repoTx    TransactionRepository
-	repoPf    PortfolioRepository
-	prices    PriceProvider
-	exchanger CurrencyExchanger
-	refCCY    string
+    repoTx    TransactionRepository
+    repoPf    PortfolioRepository
+    prices    PriceProvider
+    exchanger CurrencyExchanger
+    refCCY    string
 }
 
 func NewTransactionService(txRepo TransactionRepository, pfRepo PortfolioRepository, priceProvider PriceProvider, exchanger CurrencyExchanger, refCCY string) *TransactionService {
 	if refCCY == "" {
 		refCCY = "TWD"
 	}
-	return &TransactionService{
-		repoTx:    txRepo,
-		repoPf:    pfRepo,
-		prices:    priceProvider,
-		exchanger: exchanger,
-		refCCY:    strings.ToUpper(refCCY),
-	}
+    return &TransactionService{
+        repoTx:    txRepo,
+        repoPf:    pfRepo,
+        prices:    priceProvider,
+        exchanger: exchanger,
+        refCCY:    strings.ToUpper(refCCY),
+    }
+}
+
+// WithRef returns a shallow copy of the service using the provided
+// reference currency for calculations. Only TWD and USD are accepted
+// for now; anything else falls back to TWD.
+func (s *TransactionService) WithRef(ref string) *TransactionService {
+    r := strings.ToUpper(strings.TrimSpace(ref))
+    switch r {
+    case "USD", "TWD":
+        // ok
+    default:
+        if s != nil && s.refCCY != "" && (s.refCCY == "USD" || s.refCCY == "TWD") {
+            r = s.refCCY
+        } else {
+            r = "TWD"
+        }
+    }
+    cp := *s
+    cp.refCCY = r
+    return &cp
 }
 
 func (s *TransactionService) CreateOne(portfolioID string, dto transactionDTO) (Transaction, error) {

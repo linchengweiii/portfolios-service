@@ -77,7 +77,8 @@ func (s *Server) handleAllocationsAll(w http.ResponseWriter, r *http.Request) {
 	if basis == "" {
 		basis = "invested"
 	}
-	out, err := s.tx.ComputeAllocationsAll(basis)
+	ref := pickRef(r.URL.Query().Get("ref_ccy"))
+	out, err := s.tx.WithRef(ref).ComputeAllocationsAll(basis)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
@@ -91,7 +92,8 @@ func (s *Server) handleSummaryAll(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	out, err := s.tx.ComputeSummaryAll()
+	ref := pickRef(r.URL.Query().Get("ref_ccy"))
+	out, err := s.tx.WithRef(ref).ComputeSummaryAll()
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
@@ -119,7 +121,8 @@ func (s *Server) handleBacktestAll(w http.ResponseWriter, r *http.Request) {
         priceBasis = "close"
     }
     debug := strings.TrimSpace(r.URL.Query().Get("debug")) == "1"
-    out, err := s.tx.ComputeBacktestAll(symbol, symbolCCY, priceBasis, debug)
+    ref := pickRef(r.URL.Query().Get("ref_ccy"))
+    out, err := s.tx.WithRef(ref).ComputeBacktestAll(symbol, symbolCCY, priceBasis, debug)
     if err != nil {
         httpError(w, http.StatusBadRequest, err.Error())
         return
@@ -294,7 +297,8 @@ func (s *Server) handlePortfoliosSub(w http.ResponseWriter, r *http.Request) {
 		if basis == "" {
 			basis = "invested" // default
 		}
-		out, err := s.tx.ComputeAllocations(pfID, basis)
+		ref := pickRef(r.URL.Query().Get("ref_ccy"))
+		out, err := s.tx.WithRef(ref).ComputeAllocations(pfID, basis)
 		if err != nil {
 			status := http.StatusBadRequest
 			if err == ErrPortfolioNotFound {
@@ -314,7 +318,8 @@ func (s *Server) handlePortfoliosSub(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pfID := parts[0]
-		out, err := s.tx.ComputeSummary(pfID)
+		ref := pickRef(r.URL.Query().Get("ref_ccy"))
+		out, err := s.tx.WithRef(ref).ComputeSummary(pfID)
 		if err != nil {
 			status := http.StatusBadRequest
 			if err == ErrPortfolioNotFound {
@@ -348,7 +353,8 @@ func (s *Server) handlePortfoliosSub(w http.ResponseWriter, r *http.Request) {
             priceBasis = "close"
         }
         debug := strings.TrimSpace(r.URL.Query().Get("debug")) == "1"
-        out, err := s.tx.ComputeBacktest(pfID, symbol, symbolCCY, priceBasis, debug)
+        ref := pickRef(r.URL.Query().Get("ref_ccy"))
+        out, err := s.tx.WithRef(ref).ComputeBacktest(pfID, symbol, symbolCCY, priceBasis, debug)
         if err != nil {
             status := http.StatusBadRequest
             if err == ErrPortfolioNotFound {
@@ -455,6 +461,15 @@ func httpError(w http.ResponseWriter, status int, msg string) {
         "error":  http.StatusText(status),
         "detail": msg,
     })
+}
+
+// pickRef validates ref_ccy for now to TWD or USD; default TWD.
+func pickRef(v string) string {
+    r := strings.ToUpper(strings.TrimSpace(v))
+    if r == "USD" || r == "TWD" {
+        return r
+    }
+    return ""
 }
 
 func atoiDefault(s string, def int) int {

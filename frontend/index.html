@@ -13,6 +13,12 @@
         <label>API Base URL
           <input id="baseUrl" type="text" value="http://localhost:8080" />
         </label>
+        <label>Global Ref CCY
+          <select id="refCcyGlobal">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </label>
         <button id="refreshAll">Refresh All</button>
         <span id="status" class="status"></span>
       </div>
@@ -59,6 +65,12 @@
           <div class="right">
             <label>Choose
               <select id="portfolioSelect"></select>
+            </label>
+            <label>PF Ref CCY
+              <select id="refCcyPf">
+                <option value="TWD">TWD</option>
+                <option value="USD">USD</option>
+              </select>
             </label>
             <label>Allocations basis
               <select id="pfAllocBasis">

@@ -4,6 +4,8 @@ const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
 const inferredBase = (location.origin && location.origin.startsWith('http') && location.pathname.startsWith('/app')) ? location.origin : 'http://localhost:8080';
 const state = {
   baseUrl: localStorage.getItem('pf_base_url') || inferredBase,
+  globalRefCcy: localStorage.getItem('pf_ref_ccy_global') || 'TWD',
+  pfRefCcyMap: JSON.parse(localStorage.getItem('pf_ref_ccy_map') || '{}'),
   pfId: null,
 };
 
@@ -12,8 +14,22 @@ function fmt(n){ if(n===undefined||n===null) return ''; return Number(n).toLocal
 function fmtPct(n){ if(n===undefined||n===null) return ''; return Number(n).toFixed(2)+'%'; }
 function clsPL(n){ return Number(n) > 0 ? 'pos' : 'neg'; }
 
-async function api(path){
-  const url = state.baseUrl.replace(/\/$/,'') + path;
+function withRef(path, ref){
+  if(!ref) return path;
+  const sep = path.includes('?') ? '&' : '?';
+  return `${path}${sep}ref_ccy=${encodeURIComponent(ref)}`;
+}
+
+async function apiGlobal(path){
+  const url = state.baseUrl.replace(/\/$/,'') + withRef(path, state.globalRefCcy);
+  const res = await fetch(url);
+  if(!res.ok){ throw new Error(`HTTP ${res.status}`); }
+  return res.json();
+}
+
+async function apiPf(path){
+  const ref = state.pfRefCcyMap[state.pfId] || state.globalRefCcy || 'TWD';
+  const url = state.baseUrl.replace(/\/$/,'') + withRef(path, ref);
   const res = await fetch(url);
   if(!res.ok){ throw new Error(`HTTP ${res.status}`); }
   return res.json();
@@ -74,8 +90,8 @@ function tableAlloc(resp){
 async function loadGlobal(){
   setStatus('Loading global...');
   const [summary, alloc] = await Promise.all([
-    api('/summary'),
-    api('/allocations?basis='+encodeURIComponent($('#globalAllocBasis').value))
+    apiGlobal('/summary'),
+    apiGlobal('/allocations?basis='+encodeURIComponent($('#globalAllocBasis').value))
   ]);
   $('#globalSummary').innerHTML = cardsFromSummary(summary);
   $('#globalBar').innerHTML = renderStackBar(alloc.items||[], 'global');
@@ -85,12 +101,13 @@ async function loadGlobal(){
 }
 
 async function loadPortfolios(){
-  const pfs = await api('/portfolios');
+  const pfs = await apiGlobal('/portfolios');
   const sel = $('#portfolioSelect');
   sel.innerHTML = '';
   pfs.forEach(p=>{
     const opt = document.createElement('option');
-    opt.value = p.id; opt.textContent = `${p.name} (${p.base_ccy})`;
+    const base = (p.base_ccy && String(p.base_ccy).trim()) ? ` (${p.base_ccy})` : '';
+    opt.value = p.id; opt.textContent = `${p.name}${base}`;
     sel.appendChild(opt);
   });
   if(pfs.length){
@@ -102,8 +119,8 @@ async function loadPortfolio(){
   if(!state.pfId) return;
   setStatus('Loading portfolio...');
   const [summary, alloc] = await Promise.all([
-    api(`/portfolios/${state.pfId}/summary`),
-    api(`/portfolios/${state.pfId}/allocations?basis=${encodeURIComponent($('#pfAllocBasis').value)}`)
+    apiPf(`/portfolios/${state.pfId}/summary`),
+    apiPf(`/portfolios/${state.pfId}/allocations?basis=${encodeURIComponent($('#pfAllocBasis').value)}`)
   ]);
   $('#pfSummary').innerHTML = cardsFromSummary(summary);
   $('#pfBar').innerHTML = renderStackBar(alloc.items||[], 'pf');
@@ -163,9 +180,38 @@ function wire(){
     state.baseUrl = $('#baseUrl').value.trim().replace(/\/$/,'');
     localStorage.setItem('pf_base_url', state.baseUrl);
   });
+  // Global Ref CCY toggle
+  $('#refCcyGlobal').value = state.globalRefCcy;
+  $('#refCcyGlobal').addEventListener('change', async ()=>{
+    state.globalRefCcy = $('#refCcyGlobal').value;
+    localStorage.setItem('pf_ref_ccy_global', state.globalRefCcy);
+    await loadGlobal();
+  });
+
+  // Portfolio Ref CCY toggle
+  $('#refCcyPf').addEventListener('change', async ()=>{
+    if(!state.pfId) return;
+    state.pfRefCcyMap[state.pfId] = $('#refCcyPf').value;
+    localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
+    await loadPortfolio();
+  });
   $('#globalAllocBasis').addEventListener('change', loadGlobal);
   $('#pfAllocBasis').addEventListener('change', loadPortfolio);
-  $('#portfolioSelect').addEventListener('change', ()=>{ state.pfId = $('#portfolioSelect').value; loadPortfolio(); });
+  $('#portfolioSelect').addEventListener('change', async ()=>{
+    state.pfId = $('#portfolioSelect').value;
+    // Set PF ref CCY: use stored or infer
+    const stored = state.pfRefCcyMap[state.pfId];
+    if(stored){
+      $('#refCcyPf').value = stored;
+    }else{
+      const inferred = await inferPfRefCcy(state.pfId);
+      const pick = inferred || 'TWD';
+      state.pfRefCcyMap[state.pfId] = pick;
+      localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
+      $('#refCcyPf').value = pick;
+    }
+    await loadPortfolio();
+  });
   $('#refreshGlobal').addEventListener('click', loadGlobal);
   $('#refreshPortfolio').addEventListener('click', loadPortfolio);
   $('#refreshAll').addEventListener('click', async ()=>{ await loadGlobal(); await loadPortfolio(); });
@@ -177,7 +223,7 @@ function wire(){
       if(!sym){ alert('Enter symbol'); return; }
       const ccy = $('#globalBTccy').value.trim()||'USD';
       const basis = $('#globalBTbasis').value;
-      const data = await api(`/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
+      const data = await apiGlobal(`/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
       renderBTResult('#globalBTResult', data);
       setStatus('OK');
     }catch(e){ setStatus('Backtest error: '+e.message); }
@@ -190,17 +236,51 @@ function wire(){
       if(!sym){ alert('Enter symbol'); return; }
       const ccy = $('#pfBTccy').value.trim()||'USD';
       const basis = $('#pfBTbasis').value;
-      const data = await api(`/portfolios/${state.pfId}/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
+      const data = await apiPf(`/portfolios/${state.pfId}/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
       renderBTResult('#pfBTResult', data);
       setStatus('OK');
     }catch(e){ setStatus('Backtest error: '+e.message); }
   });
 }
 
+async function inferPfRefCcy(pfId){
+  try{
+    // Fetch all tx for the portfolio (no ref_ccy needed)
+    const url = state.baseUrl.replace(/\/$/,'') + `/portfolios/${pfId}/transactions?limit=0`;
+    const res = await fetch(url);
+    if(!res.ok) return null;
+    const txs = await res.json();
+    const counts = { TWD: 0, USD: 0 };
+    txs.forEach(tx => {
+      const t = (tx.trade_type||'').toLowerCase();
+      if(t==='buy' || t==='sell' || t==='dividend'){
+        const c = String(tx.currency||'').trim().toUpperCase();
+        if(c==='TWD' || c==='USD') counts[c]++;
+      }
+    });
+    if(counts.USD > counts.TWD) return 'USD';
+    if(counts.TWD > counts.USD) return 'TWD';
+    return null;
+  }catch(_){ return null; }
+}
+
 (async function init(){
   try{
     wire();
     await loadPortfolios();
+    // Initialize PF ref CCY for the first portfolio
+    if(state.pfId){
+      const stored = state.pfRefCcyMap[state.pfId];
+      if(stored){
+        $('#refCcyPf').value = stored;
+      } else {
+        const inferred = await inferPfRefCcy(state.pfId);
+        const pick = inferred || 'TWD';
+        state.pfRefCcyMap[state.pfId] = pick;
+        localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
+        $('#refCcyPf').value = pick;
+      }
+    }
     await loadGlobal();
     await loadPortfolio();
   }catch(e){ setStatus('Error: '+e.message); console.error(e); }

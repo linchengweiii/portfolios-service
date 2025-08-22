@@ -38,8 +38,10 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 - Create: `POST /portfolios`
 
   ```json
-  { "name": "Core US Tech", "base_ccy": "USD" }
+  { "name": "Core US Tech" }
   ```
+  Notes:
+  - `base_ccy` is no longer required for creation. The service computes values in a per-request reference currency via the `ref_ccy` query param (see below). If provided on creation, `base_ccy` is stored but not used for calculations.
 - List: `GET /portfolios`
 - Get: `GET /portfolios/{id}`
 - Update: `PUT /portfolios/{id}`
@@ -69,8 +71,10 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 
 ### Allocations
 
-- **Per portfolio**: `GET /portfolios/{id}/allocations?basis=invested|market_value`
-- **All portfolios**: `GET /allocations?basis=invested|market_value`
+- **Per portfolio**: `GET /portfolios/{id}/allocations?basis=invested|market_value&ref_ccy=TWD|USD`
+- **All portfolios**: `GET /allocations?basis=invested|market_value&ref_ccy=TWD|USD`
+
+`ref_ccy` controls the reference currency for output and conversions. Allowed values: `TWD` or `USD` (default `TWD`).
 
 **Response (shape):**
 
@@ -87,18 +91,19 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 
 ### Summary
 
-- **Global summary**: `GET /summary`
-- **Per-portfolio summary**: `GET /portfolios/{id}/summary`
+- **Global summary**: `GET /summary?ref_ccy=TWD|USD`
+- **Per-portfolio summary**: `GET /portfolios/{id}/summary?ref_ccy=TWD|USD`
 
 ### Backtest
 
-- **Global backtest**: `GET /backtest?symbol={SYMBOL}`
-- **Per-portfolio backtest**: `GET /portfolios/{id}/backtest?symbol={SYMBOL}`
+- **Global backtest**: `GET /backtest?symbol={SYMBOL}&ref_ccy=TWD|USD`
+- **Per-portfolio backtest**: `GET /portfolios/{id}/backtest?symbol={SYMBOL}&ref_ccy=TWD|USD`
 
 Optional params:
 - `symbol_ccy`: currency of `{SYMBOL}` quotes (default `USD`).
 - `price_basis`: `open` or `close` (default `close`; backtest only).
 - `debug`: `1` to include event-by-event simulation details.
+ - `ref_ccy`: output currency for calculations (`TWD` or `USD`; defaults to `TWD`).
 
 Response shape:
 

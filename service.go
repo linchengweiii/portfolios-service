@@ -154,11 +154,16 @@ func (s *TransactionService) rate(from string) float64 {
 /* ===================== Allocations ===================== */
 
 type AllocationItem struct {
-	Symbol        string  `json:"symbol"`
-	Shares        float64 `json:"shares"`
-	Invested      float64 `json:"invested"`
-	MarketValue   float64 `json:"market_value"`
-	WeightPercent float64 `json:"weight_percent"`
+    Symbol        string  `json:"symbol"`
+    Shares        float64 `json:"shares"`
+    Invested      float64 `json:"invested"`
+    MarketValue   float64 `json:"market_value"`
+    WeightPercent float64 `json:"weight_percent"`
+    // Optional daily P/L stats when a history-capable price provider is available
+    DailyPL        float64 `json:"daily_pl,omitempty"`
+    DailyPLPercent float64 `json:"daily_pl_percent,omitempty"`
+    // Yesterday's market value used as the denominator for DailyPLPercent
+    DailyPrevMarketValue float64 `json:"daily_prev_market_value,omitempty"`
 }
 
 type AllocationResponse struct {
@@ -281,26 +286,47 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
 		}
 		var totalMV float64
 		var asOf time.Time
-		for sym, a := range bucket {
-			if a.shares <= 0 {
-				continue
-			}
-			price, ts, err := s.prices.GetPrice(sym)
-			if err != nil {
-				continue // skip symbols we can't price
-			}
-			mv := a.shares * price * s.rate(a.currency)
-			items = append(items, AllocationItem{
-				Symbol:      sym,
-				Shares:      a.shares,
-				Invested:    a.invested,
-				MarketValue: mv,
-			})
-			totalMV += mv
-			if ts.After(asOf) {
-				asOf = ts
-			}
-		}
+        for sym, a := range bucket {
+            if a.shares <= 0 {
+                continue
+            }
+            price, ts, err := s.prices.GetPrice(sym)
+            if err != nil {
+                continue // skip symbols we can't price
+            }
+            mv := a.shares * price * s.rate(a.currency)
+
+            it := AllocationItem{
+                Symbol:      sym,
+                Shares:      a.shares,
+                Invested:    a.invested,
+                MarketValue: mv,
+            }
+
+            // Populate per-item daily P/L if historical prices are available
+            if hp, ok := s.prices.(HistoryProvider); ok {
+                today := time.Now().UTC()
+                if cur, asOfDay, err1 := hp.GetPriceOn(sym, today); err1 == nil && cur > 0 {
+                    if prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1)); err2 == nil && prev > 0 {
+                        rate := s.rate(a.currency)
+                        dailyPL := a.shares * (cur - prev) * rate
+                        // Denominator is yesterday's MV for the symbol
+                        prevMV := a.shares * prev * rate
+                        it.DailyPL = dailyPL
+                        it.DailyPrevMarketValue = prevMV
+                        if prevMV > 0 {
+                            it.DailyPLPercent = (dailyPL / prevMV) * 100.0
+                        }
+                    }
+                }
+            }
+
+            items = append(items, it)
+            totalMV += mv
+            if ts.After(asOf) {
+                asOf = ts
+            }
+        }
 		for i := range items {
 			if totalMV > 0 {
 				items[i].WeightPercent = (items[i].MarketValue / totalMV) * 100.0

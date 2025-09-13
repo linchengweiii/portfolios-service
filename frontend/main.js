@@ -57,14 +57,18 @@ function cardsFromSummary(s){
 function tableAlloc(resp){
   const items = resp.items||[];
   const sorted = items.slice().sort((a,b)=> (Number(b.weight_percent)||0) - (Number(a.weight_percent)||0));
+  const showDaily = String(resp.basis||'').toLowerCase() === 'market_value';
+  const showPLAmount = showDaily; // show P/L amount when we have market values
   const head = `<tr>
     <th>Symbol</th>
     <th>Weight %</th>
     <th>P/L (invested %)</th>
+    ${showDaily ? '<th>Daily P/L (Daily %)</th>' : ''}
     <th>Shares</th>
     <th>Invested/Share</th>
     <th>Market/Share</th>
   </tr>`;
+  let totalWeight = 0, totalInvested = 0, totalMV = 0, totalPL = 0, totalDailyPL = 0, totalPrevMV = 0, totalShares = 0;
   const rows = sorted.map(it=>{
     const shares = Number(it.shares)||0;
     const invested = Number(it.invested)||0;
@@ -74,17 +78,50 @@ function tableAlloc(resp){
     const invPerShare = (shares>0) ? invested / shares : null;
     const mvPerShare = (shares>0 && mv>0) ? mv / shares : null;
     const plPctHtml = (plPct===null) ? '' : `<span class="${clsPL(plPct)}">${fmtPct(plPct)}</span>`;
+    const plHtml = showPLAmount
+      ? `${fmt(pl)}${plPct===null? '' : ` (${plPctHtml})`}`
+      : `${plPctHtml}`;
+    const dailyPL = (it.daily_pl===undefined||it.daily_pl===null) ? null : Number(it.daily_pl);
+    const dailyPct = (it.daily_pl_percent===undefined||it.daily_pl_percent===null) ? null : Number(it.daily_pl_percent);
+    const dailyHtml = (!showDaily) ? '' : `<td>${dailyPL===null? '' : fmt(dailyPL)}${dailyPct===null? '' : ` (<span class="${clsPL(dailyPct)}">${fmtPct(dailyPct)}</span>)`}</td>`;
+    // Accumulate totals
+    totalWeight += Number(it.weight_percent)||0;
+    totalInvested += invested;
+    totalMV += mv;
+    totalPL += pl;
+    totalShares += shares;
+    if (dailyPL!==null) totalDailyPL += dailyPL;
+    const prevMV = (it.daily_prev_market_value===undefined||it.daily_prev_market_value===null) ? null : Number(it.daily_prev_market_value);
+    if (prevMV!==null) totalPrevMV += prevMV;
     return `
       <tr data-symbol="${it.symbol}">
         <td>${it.symbol}</td>
         <td>${fmtPct(it.weight_percent)}</td>
-        <td>${plPctHtml}</td>
+        <td>${plHtml}</td>
+        ${dailyHtml}
         <td>${fmt(shares)}</td>
         <td>${invPerShare===null? '': fmt(invPerShare)}</td>
         <td>${mvPerShare===null? '': fmt(mvPerShare)}</td>
       </tr>`;
   }).join('');
-  return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}</tbody></table></div>`;
+  // Totals row
+  const totalPlPct = totalInvested>0 ? (totalPL/totalInvested*100) : null;
+  const totalPlHtml = showPLAmount
+    ? `${fmt(totalPL)}${totalPlPct===null? '' : ` (<span class="${clsPL(totalPlPct)}">${fmtPct(totalPlPct)}</span>)`}`
+    : `${totalPlPct===null? '' : `<span class="${clsPL(totalPlPct)}">${fmtPct(totalPlPct)}</span>`}`;
+  const totalDailyPct = (showDaily && totalPrevMV>0) ? (totalDailyPL/totalPrevMV*100) : null;
+  const totalDailyHtml = (!showDaily) ? '' : `<td>${fmt(totalDailyPL)}${totalDailyPct===null? '' : ` (<span class="${clsPL(totalDailyPct)}">${fmtPct(totalDailyPct)}</span>)`}</td>`;
+  const totalRow = `
+    <tr class="total">
+      <td>Total</td>
+      <td>${fmtPct(totalWeight)}</td>
+      <td>${totalPlHtml}</td>
+      ${totalDailyHtml}
+      <td>${fmt(totalShares)}</td>
+      <td></td>
+      <td></td>
+    </tr>`;
+  return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}${totalRow}</tbody></table></div>`;
 }
 
 async function loadGlobal(){

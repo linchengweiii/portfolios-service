@@ -13,13 +13,16 @@
         <label>API Base URL
           <input id="baseUrl" type="text" value="http://localhost:8080" />
         </label>
-        <label>Global Ref CCY
-          <select id="refCcyGlobal">
+        <label>Portfolio
+          <select id="portfolioSelect"></select>
+        </label>
+        <label>Ref CCY
+          <select id="refCcy">
             <option value="TWD">TWD</option>
             <option value="USD">USD</option>
           </select>
         </label>
-        <button id="refreshAll">Refresh All</button>
+        <button id="refresh">Refresh</button>
         <span id="status" class="status"></span>
       </div>
     </header>
@@ -27,79 +30,39 @@
     <main>
       <section class="panel">
         <div class="panel-header">
-          <h2>Global Summary</h2>
+          <h2>Overview</h2>
           <div class="right">
             <label>Allocations basis
-              <select id="globalAllocBasis">
+              <select id="allocBasis">
                 <option value="market_value" selected>market_value</option>
                 <option value="invested">invested</option>
               </select>
             </label>
-            <button id="refreshGlobal">Refresh</button>
+            <label>Label threshold
+              <select id="labelThreshold"></select>
+            </label>
           </div>
         </div>
-        <div id="globalSummary" class="grid"></div>
-        <h3>Global Allocations</h3>
-        <div id="globalBar" class="stack-wrap"></div>
-        <div id="globalAlloc" class="table-wrap"></div>
+        <div id="summary" class="grid"></div>
+        <h3>Allocations</h3>
+        <div id="bar" class="stack-wrap"></div>
+        <div id="alloc" class="table-wrap"></div>
         <div class="panel-subcontrols">
           <h3>Backtest</h3>
           <div class="controls">
-            <label>Symbol <input id="globalBTsymbol" type="text" placeholder="e.g., QQQ" /></label>
-            <label>Symbol CCY <input id="globalBTccy" type="text" value="USD"/></label>
+            <label>Symbol <input id="btSymbol" type="text" placeholder="e.g., QQQ" /></label>
+            <label>Symbol CCY <input id="btCcy" type="text" value="USD"/></label>
             <label>Price Basis
-              <select id="globalBTbasis">
+              <select id="btBasis">
                 <option value="close" selected>close</option>
                 <option value="open">open</option>
               </select>
             </label>
-            <button id="runGlobalBT">Run Backtest</button>
+            <button id="runBT">Run Backtest</button>
           </div>
-          <div id="globalBTResult" class="grid"></div>
+          <div id="btResult" class="grid"></div>
         </div>
-      </section>
-
-      <section class="panel">
-        <div class="panel-header">
-          <h2>Portfolios</h2>
-          <div class="right">
-            <label>Choose
-              <select id="portfolioSelect"></select>
-            </label>
-            <label>PF Ref CCY
-              <select id="refCcyPf">
-                <option value="TWD">TWD</option>
-                <option value="USD">USD</option>
-              </select>
-            </label>
-            <label>Allocations basis
-              <select id="pfAllocBasis">
-                <option value="market_value" selected>market_value</option>
-                <option value="invested">invested</option>
-              </select>
-            </label>
-            <button id="refreshPortfolio">Refresh</button>
-          </div>
-        </div>
-        <div id="pfSummary" class="grid"></div>
-        <h3>Portfolio Allocations</h3>
-        <div id="pfBar" class="stack-wrap"></div>
-        <div id="pfAlloc" class="table-wrap"></div>
-        <div class="panel-subcontrols">
-          <h3>Backtest</h3>
-          <div class="controls">
-            <label>Symbol <input id="pfBTsymbol" type="text" placeholder="e.g., QQQ"/></label>
-            <label>Symbol CCY <input id="pfBTccy" type="text" value="USD"/></label>
-            <label>Price Basis
-              <select id="pfBTbasis">
-                <option value="close" selected>close</option>
-                <option value="open">open</option>
-              </select>
-            </label>
-            <button id="runPfBT">Run Backtest</button>
-          </div>
-          <div id="pfBTResult" class="grid"></div>
-        </div>
+        
       </section>
     </main>
 

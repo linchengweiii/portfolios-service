@@ -6,8 +6,11 @@ const state = {
   baseUrl: localStorage.getItem('pf_base_url') || inferredBase,
   globalRefCcy: localStorage.getItem('pf_ref_ccy_global') || 'TWD',
   pfRefCcyMap: JSON.parse(localStorage.getItem('pf_ref_ccy_map') || '{}'),
-  pfId: null,
+  pfId: 'ALL',
+  labelThreshold: Number(localStorage.getItem('pf_label_threshold') || '3'),
 };
+
+// (company name lookup temporarily disabled)
 
 function setStatus(msg){ $('#status').textContent = msg || ''; }
 function fmt(n){ if(n===undefined||n===null) return ''; return Number(n).toLocaleString(undefined,{maximumFractionDigits:2}); }
@@ -124,69 +127,88 @@ function tableAlloc(resp){
   return `<div class="table-wrap"><table><thead>${head}</thead><tbody>${rows}${totalRow}</tbody></table></div>`;
 }
 
-async function loadGlobal(){
-  setStatus('Loading global...');
-  const [summary, alloc] = await Promise.all([
-    apiGlobal('/summary'),
-    apiGlobal('/allocations?basis='+encodeURIComponent($('#globalAllocBasis').value))
-  ]);
-  $('#globalSummary').innerHTML = cardsFromSummary(summary);
-  $('#globalBar').innerHTML = renderStackBar(alloc.items||[], 'global');
-  $('#globalAlloc').innerHTML = tableAlloc(alloc);
-  bindStackBar('global');
-  setStatus('OK');
+async function loadView(){
+  const basisSel = $('#allocBasis');
+  const basis = basisSel ? basisSel.value : 'market_value';
+  if(state.pfId === 'ALL'){
+    setStatus('Loading (ALL)...');
+    const [summary, alloc] = await Promise.all([
+      apiGlobal('/summary'),
+      apiGlobal('/allocations?basis='+encodeURIComponent(basis))
+    ]);
+    $('#summary').innerHTML = cardsFromSummary(summary);
+    $('#bar').innerHTML = renderStackBar(alloc.items||[]);
+    $('#alloc').innerHTML = tableAlloc(alloc);
+    bindStackBar();
+    setStatus('OK');
+  } else {
+    setStatus('Loading portfolio...');
+    const [summary, alloc] = await Promise.all([
+      apiPf(`/portfolios/${state.pfId}/summary`),
+      apiPf(`/portfolios/${state.pfId}/allocations?basis=${encodeURIComponent(basis)}`)
+    ]);
+    $('#summary').innerHTML = cardsFromSummary(summary);
+    $('#bar').innerHTML = renderStackBar(alloc.items||[]);
+    $('#alloc').innerHTML = tableAlloc(alloc);
+    bindStackBar();
+    setStatus('OK');
+  }
 }
 
 async function loadPortfolios(){
   const pfs = await apiGlobal('/portfolios');
   const sel = $('#portfolioSelect');
   sel.innerHTML = '';
+  // Add ALL option first
+  const optAll = document.createElement('option');
+  optAll.value = 'ALL'; optAll.textContent = 'ALL';
+  sel.appendChild(optAll);
   pfs.forEach(p=>{
     const opt = document.createElement('option');
     const base = (p.base_ccy && String(p.base_ccy).trim()) ? ` (${p.base_ccy})` : '';
     opt.value = p.id; opt.textContent = `${p.name}${base}`;
     sel.appendChild(opt);
   });
-  if(pfs.length){
-    state.pfId = pfs[0].id; sel.value = state.pfId;
-  }
+  state.pfId = 'ALL';
+  sel.value = 'ALL';
 }
 
-async function loadPortfolio(){
-  if(!state.pfId) return;
-  setStatus('Loading portfolio...');
-  const [summary, alloc] = await Promise.all([
-    apiPf(`/portfolios/${state.pfId}/summary`),
-    apiPf(`/portfolios/${state.pfId}/allocations?basis=${encodeURIComponent($('#pfAllocBasis').value)}`)
-  ]);
-  $('#pfSummary').innerHTML = cardsFromSummary(summary);
-  $('#pfBar').innerHTML = renderStackBar(alloc.items||[], 'pf');
-  $('#pfAlloc').innerHTML = tableAlloc(alloc);
-  bindStackBar('pf');
-  setStatus('OK');
-}
+// loadPortfolio removed; unified into loadView
 
-function renderStackBar(items, scope){
+function renderStackBar(items){
   if(!items.length) return '<div class="muted">No positions</div>';
-  // colors palette
+  const thresholdSel = $('#labelThreshold');
+  const threshold = Math.max(0, Math.min(100, Number(thresholdSel ? thresholdSel.value : state.labelThreshold || 3)));
   const colors = ['#5b9bff','#8bd450','#f39c12','#e74c3c','#9b59b6','#1abc9c','#e67e22','#2ecc71','#ff6b6b','#60a5fa','#f472b6'];
-  const sorted = items.slice().sort((a,b)=> (b.weight_percent||0) - (a.weight_percent||0));
-  const totalPct = sorted.reduce((a,b)=>a+(b.weight_percent||0),0) || 100;
-  const segs = sorted.map((it,i)=>{
-    const pct = Math.max(0, it.weight_percent||0) * 100 / totalPct; // normalize in case
+  const sorted = items.slice().sort((a,b)=> (Number(b.weight_percent)||0) - (Number(a.weight_percent)||0));
+  const totalPct = sorted.reduce((a,b)=>a+(Number(b.weight_percent)||0),0) || 100;
+  // Partition into majors (>threshold%) and minors (<threshold%) by normalized percentage
+  const majors = [];
+  const minors = [];
+  sorted.forEach(it => {
+    const pct = Math.max(0, Number(it.weight_percent)||0) * 100 / totalPct;
+    if(pct < threshold){ minors.push(it); } else { majors.push(it); }
+  });
+  const minorSum = minors.reduce((a,b)=> a + (Number(b.weight_percent)||0), 0);
+  const itemsForBar = majors.slice();
+  if(minorSum > 0){
+    itemsForBar.push({ symbol: 'OTHERS', weight_percent: minorSum });
+  }
+  const segs = itemsForBar.map((it,i)=>{
+    const pct = Math.max(0, Number(it.weight_percent)||0) * 100 / totalPct;
     const w = pct.toFixed(2);
     const c = colors[i % colors.length];
     const label = `${it.symbol} ${pct.toFixed(1)}%`;
-    const showInline = pct >= 8; // show inline label only if wide enough
-    const inner = showInline ? `<span class="segtext">${label}</span>` : '';
-    return `<div class="seg" data-scope="${scope}" data-symbol="${it.symbol}" title="${label}" data-label="${label}" style="background:${c};width:${w}%">${inner}</div>`;
+    const showInline = pct > threshold; // show inline label only if > threshold
+    const inner = showInline ? `<span class="segtext"><span class="sym">${it.symbol}</span><span class="pct">${pct.toFixed(1)}%</span></span>` : '';
+    return `<div class=\"seg\" data-symbol=\"${it.symbol}\" title=\"${label}\" data-label=\"${label}\" style=\"background:${c};width:${w}%\">${inner}</div>`;
   }).join('');
   return `<div class="stackbar">${segs}</div>`;
 }
 
-function bindStackBar(scope){
-  const barId = scope === 'global' ? '#globalBar' : '#pfBar';
-  const tableId = scope === 'global' ? '#globalAlloc' : '#pfAlloc';
+function bindStackBar(){
+  const barId = '#bar';
+  const tableId = '#alloc';
   const wrap = $(barId);
   wrap.onclick = (e)=>{
     const seg = e.target.closest('.seg');
@@ -217,64 +239,71 @@ function wire(){
     state.baseUrl = $('#baseUrl').value.trim().replace(/\/$/,'');
     localStorage.setItem('pf_base_url', state.baseUrl);
   });
-  // Global Ref CCY toggle
-  $('#refCcyGlobal').value = state.globalRefCcy;
-  $('#refCcyGlobal').addEventListener('change', async ()=>{
-    state.globalRefCcy = $('#refCcyGlobal').value;
-    localStorage.setItem('pf_ref_ccy_global', state.globalRefCcy);
-    await loadGlobal();
+  // Label threshold 0..100
+  const lt = $('#labelThreshold');
+  if(lt){
+    lt.innerHTML = '';
+    for(let i=0;i<=100;i++){
+      const opt = document.createElement('option');
+      opt.value = String(i);
+      opt.textContent = `${i}%`;
+      lt.appendChild(opt);
+    }
+    if(!Number.isFinite(state.labelThreshold)) state.labelThreshold = 3;
+    lt.value = String(Math.max(0, Math.min(100, state.labelThreshold)));
+    lt.addEventListener('change', ()=>{
+      state.labelThreshold = Number(lt.value);
+      localStorage.setItem('pf_label_threshold', String(state.labelThreshold));
+      loadView();
+    });
+  }
+  // Combined Ref CCY toggle
+  $('#refCcy').addEventListener('change', async ()=>{
+    const value = $('#refCcy').value;
+    if(state.pfId === 'ALL'){
+      state.globalRefCcy = value;
+      localStorage.setItem('pf_ref_ccy_global', state.globalRefCcy);
+    } else {
+      state.pfRefCcyMap[state.pfId] = value;
+      localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
+    }
+    await loadView();
   });
-
-  // Portfolio Ref CCY toggle
-  $('#refCcyPf').addEventListener('change', async ()=>{
-    if(!state.pfId) return;
-    state.pfRefCcyMap[state.pfId] = $('#refCcyPf').value;
-    localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
-    await loadPortfolio();
-  });
-  $('#globalAllocBasis').addEventListener('change', loadGlobal);
-  $('#pfAllocBasis').addEventListener('change', loadPortfolio);
+  $('#allocBasis').addEventListener('change', loadView);
   $('#portfolioSelect').addEventListener('change', async ()=>{
     state.pfId = $('#portfolioSelect').value;
-    // Set PF ref CCY: use stored or infer
-    const stored = state.pfRefCcyMap[state.pfId];
-    if(stored){
-      $('#refCcyPf').value = stored;
-    }else{
-      const inferred = await inferPfRefCcy(state.pfId);
-      const pick = inferred || 'TWD';
-      state.pfRefCcyMap[state.pfId] = pick;
-      localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
-      $('#refCcyPf').value = pick;
+    if(state.pfId === 'ALL'){
+      $('#refCcy').value = state.globalRefCcy;
+    } else {
+      const stored = state.pfRefCcyMap[state.pfId];
+      if(stored){
+        $('#refCcy').value = stored;
+      } else {
+        const inferred = await inferPfRefCcy(state.pfId);
+        const pick = inferred || 'TWD';
+        state.pfRefCcyMap[state.pfId] = pick;
+        localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
+        $('#refCcy').value = pick;
+      }
     }
-    await loadPortfolio();
+    await loadView();
   });
-  $('#refreshGlobal').addEventListener('click', loadGlobal);
-  $('#refreshPortfolio').addEventListener('click', loadPortfolio);
-  $('#refreshAll').addEventListener('click', async ()=>{ await loadGlobal(); await loadPortfolio(); });
+  $('#refresh').addEventListener('click', loadView);
 
-  $('#runGlobalBT').addEventListener('click', async ()=>{
+  $('#runBT').addEventListener('click', async ()=>{
     try{
-      setStatus('Backtesting (global)...');
-      const sym = $('#globalBTsymbol').value.trim();
+      setStatus('Backtesting...');
+      const sym = $('#btSymbol').value.trim();
       if(!sym){ alert('Enter symbol'); return; }
-      const ccy = $('#globalBTccy').value.trim()||'USD';
-      const basis = $('#globalBTbasis').value;
-      const data = await apiGlobal(`/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
-      renderBTResult('#globalBTResult', data);
-      setStatus('OK');
-    }catch(e){ setStatus('Backtest error: '+e.message); }
-  });
-
-  $('#runPfBT').addEventListener('click', async ()=>{
-    try{
-      setStatus('Backtesting (portfolio)...');
-      const sym = $('#pfBTsymbol').value.trim();
-      if(!sym){ alert('Enter symbol'); return; }
-      const ccy = $('#pfBTccy').value.trim()||'USD';
-      const basis = $('#pfBTbasis').value;
-      const data = await apiPf(`/portfolios/${state.pfId}/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
-      renderBTResult('#pfBTResult', data);
+      const ccy = $('#btCcy').value.trim()||'USD';
+      const basis = $('#btBasis').value;
+      if(state.pfId === 'ALL'){
+        const data = await apiGlobal(`/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
+        renderBTResult('#btResult', data);
+      } else {
+        const data = await apiPf(`/portfolios/${state.pfId}/backtest?symbol=${encodeURIComponent(sym)}&symbol_ccy=${encodeURIComponent(ccy)}&price_basis=${encodeURIComponent(basis)}`);
+        renderBTResult('#btResult', data);
+      }
       setStatus('OK');
     }catch(e){ setStatus('Backtest error: '+e.message); }
   });
@@ -305,20 +334,8 @@ async function inferPfRefCcy(pfId){
   try{
     wire();
     await loadPortfolios();
-    // Initialize PF ref CCY for the first portfolio
-    if(state.pfId){
-      const stored = state.pfRefCcyMap[state.pfId];
-      if(stored){
-        $('#refCcyPf').value = stored;
-      } else {
-        const inferred = await inferPfRefCcy(state.pfId);
-        const pick = inferred || 'TWD';
-        state.pfRefCcyMap[state.pfId] = pick;
-        localStorage.setItem('pf_ref_ccy_map', JSON.stringify(state.pfRefCcyMap));
-        $('#refCcyPf').value = pick;
-      }
-    }
-    await loadGlobal();
-    await loadPortfolio();
+    // Set initial ref CCY to global for ALL
+    $('#refCcy').value = state.globalRefCcy;
+    await loadView();
   }catch(e){ setStatus('Error: '+e.message); console.error(e); }
 })();

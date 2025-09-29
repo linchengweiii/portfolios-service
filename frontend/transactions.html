@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Transactions</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Transactions</h1>
+      <div class="controls">
+        <label>API Base URL
+          <input id="baseUrl" type="text" value="http://localhost:8080" />
+        </label>
+        <label>Portfolio
+          <select id="portfolioSelect"></select>
+        </label>
+        <label>Symbol
+          <input id="txSymbol" type="text" placeholder="optional filter" />
+        </label>
+        <label>Sort
+          <select id="txSort">
+            <option value="date_desc" selected>date_desc</option>
+            <option value="date_asc">date_asc</option>
+          </select>
+        </label>
+        <label>Limit
+          <select id="txLimit">
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+            <option value="0">All</option>
+          </select>
+        </label>
+        <button id="txReload">Load</button>
+        <a href="index.html">Overview</a>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+
+    <main>
+      <section id="addPanel" class="panel">
+        <div class="panel-header">
+          <h2>Add Transaction</h2>
+          <div class="right muted">Note: buy total is negative; sell/dividend/cash deposit total is positive.</div>
+        </div>
+        <div class="controls" style="padding:8px 16px; gap:16px; flex-wrap:wrap">
+          <label>Type
+            <select id="newType">
+              <option value="buy" selected>buy</option>
+              <option value="sell">sell</option>
+              <option value="dividend">dividend</option>
+              <option value="cash">cash</option>
+            </select>
+          </label>
+          <label>Symbol
+            <input id="newSymbol" type="text" placeholder="e.g., AMZN (empty for cash)" />
+          </label>
+          <label>Currency
+            <input id="newCurrency" type="text" value="USD" />
+          </label>
+          <label>Shares
+            <input id="newShares" type="number" step="0.0000001" min="0" placeholder="0" />
+          </label>
+          <label>Price
+            <input id="newPrice" type="number" step="0.0000001" placeholder="0" />
+          </label>
+          <label>Fee
+            <input id="newFee" type="number" step="0.0000001" value="0" />
+          </label>
+          <label>Date
+            <input id="newDate" type="text" placeholder="YYYY/MM/DD" />
+          </label>
+          <label>Total
+            <input id="newTotal" type="number" step="0.0000001" placeholder="e.g., -259.11" />
+          </label>
+          <button id="addTx">Add</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Transactions</h2>
+          <div class="right"></div>
+        </div>
+        <div class="controls" style="padding:8px 16px; gap:16px; flex-wrap:wrap">
+          <label>Symbol
+            <input id="txSymbol" type="text" placeholder="optional filter" />
+          </label>
+          <label>Sort
+            <select id="txSort">
+              <option value="date_desc" selected>date_desc</option>
+              <option value="date_asc">date_asc</option>
+            </select>
+          </label>
+          <label>Limit
+            <select id="txLimit">
+              <option value="50" selected>50</option>
+              <option value="100">100</option>
+              <option value="200">200</option>
+              <option value="0">All</option>
+            </select>
+          </label>
+          <button id="txReload">Load</button>
+        </div>
+        <div id="txList" class="table-wrap"></div>
+      </section>
+    </main>
+
+    <footer>
+      <small>Powered by your portfolio-service API</small>
+    </footer>
+
+    <script type="module" src="transactions.js"></script>
+  </body>
+  </html>

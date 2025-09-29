@@ -8,6 +8,8 @@ const state = {
   pfRefCcyMap: JSON.parse(localStorage.getItem('pf_ref_ccy_map') || '{}'),
   pfId: 'ALL',
   labelThreshold: Number(localStorage.getItem('pf_label_threshold') || '3'),
+  portfolios: [], // cached list (still used for overview if needed later)
+  pfNameById: {},
 };
 
 // (company name lookup temporarily disabled)
@@ -159,6 +161,8 @@ async function loadPortfolios(){
   const pfs = await apiGlobal('/portfolios');
   const sel = $('#portfolioSelect');
   sel.innerHTML = '';
+  state.portfolios = Array.isArray(pfs) ? pfs : [];
+  state.pfNameById = Object.fromEntries(state.portfolios.map(p=>[p.id, p.name]));
   // Add ALL option first
   const optAll = document.createElement('option');
   optAll.value = 'ALL'; optAll.textContent = 'ALL';
@@ -225,6 +229,7 @@ function bindStackBar(){
     });
   };
 }
+
 
 function renderBTResult(targetSel, data){
   const rows = [
@@ -308,6 +313,7 @@ function wire(){
       setStatus('OK');
     }catch(e){ setStatus('Backtest error: '+e.message); }
   });
+
 }
 
 async function inferPfRefCcy(pfId){

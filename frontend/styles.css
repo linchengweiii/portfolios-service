@@ -70,3 +70,4 @@ tr.total td{font-weight:700;border-top:2px solid var(--border)}
 /* Results grid: padding, no margin */
 .panel-subcontrols .grid{padding:12px 16px;margin:0}
 .panel-subcontrols .controls label{padding:4px 6px}
+.hidden{display:none !important}

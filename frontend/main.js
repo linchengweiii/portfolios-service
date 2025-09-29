@@ -165,8 +165,9 @@ async function loadPortfolios(){
   sel.appendChild(optAll);
   pfs.forEach(p=>{
     const opt = document.createElement('option');
-    const base = (p.base_ccy && String(p.base_ccy).trim()) ? ` (${p.base_ccy})` : '';
-    opt.value = p.id; opt.textContent = `${p.name}${base}`;
+    // Do not display base currency for individual portfolios in the selector
+    opt.value = p.id;
+    opt.textContent = String(p.name || '').trim() || p.id;
     sel.appendChild(opt);
   });
   state.pfId = 'ALL';

@@ -28,6 +28,7 @@ Without ALPHAVANTAGE_API_KEY, /allocations?basis=market_value and /summary will 
 ## Data Model Notes
 
 - Use symbol only (e.g., AMZN, BHP.AX, 7203.T).
+- Options support: Yahoo-style option symbols (e.g., `AAPL240118C00150000`) are detected and valued using a 100x contract multiplier. Your transaction `total` should reflect actual cash flow; per-contract pricing from providers is scaled by 100 for market value, daily P/L, and backtests.
 - trade_type: buy | sell | dividend | cash.
 - date format: YYYY/MM/DD.
 - For purchases, total is usually negative (cash out). The service uses ABS(total) as invested capital.

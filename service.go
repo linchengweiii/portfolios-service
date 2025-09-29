@@ -1,9 +1,10 @@
 package main
 
 import (
-	"errors"
-	"strings"
-	"time"
+    "errors"
+    "regexp"
+    "strings"
+    "time"
 )
 
 /* ===================== Portfolio service ===================== */
@@ -151,6 +152,19 @@ func (s *TransactionService) rate(from string) float64 {
 	return r
 }
 
+// Detect option symbols and return contract multiplier.
+// For standard US equity options, Yahoo symbols look like: AAPL240118C00150000
+// Pattern: TICKER(1-6 letters) + YYMMDD + C|P + 8-digit strike.
+var reOptionSymbol = regexp.MustCompile(`^[A-Z]{1,6}\d{6}[CP]\d{8}$`)
+
+func multiplierForSymbol(sym string) float64 {
+    s := strings.ToUpper(strings.TrimSpace(sym))
+    if reOptionSymbol.MatchString(s) {
+        return 100.0
+    }
+    return 1.0
+}
+
 /* ===================== Allocations ===================== */
 
 type AllocationItem struct {
@@ -294,7 +308,8 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
             if err != nil {
                 continue // skip symbols we can't price
             }
-            mv := a.shares * price * s.rate(a.currency)
+            mult := multiplierForSymbol(sym)
+            mv := a.shares * price * mult * s.rate(a.currency)
 
             it := AllocationItem{
                 Symbol:      sym,
@@ -309,9 +324,10 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
                 if cur, asOfDay, err1 := hp.GetPriceOn(sym, today); err1 == nil && cur > 0 {
                     if prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1)); err2 == nil && prev > 0 {
                         rate := s.rate(a.currency)
-                        dailyPL := a.shares * (cur - prev) * rate
+                        mult := multiplierForSymbol(sym)
+                        dailyPL := a.shares * (cur - prev) * mult * rate
                         // Denominator is yesterday's MV for the symbol
-                        prevMV := a.shares * prev * rate
+                        prevMV := a.shares * prev * mult * rate
                         it.DailyPL = dailyPL
                         it.DailyPrevMarketValue = prevMV
                         if prevMV > 0 {
@@ -471,7 +487,8 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
         if err != nil {
             continue
         }
-        mv := a.shares * price * s.rate(a.currency)
+        mult := multiplierForSymbol(sym)
+        mv := a.shares * price * mult * s.rate(a.currency)
         pl := mv - a.invested
         plPct := 0.0
         if a.invested > 0 {
@@ -499,8 +516,9 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
                 prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1))
                 if err2 == nil && prev > 0 {
                     rate := s.rate(a.currency)
-                    dailyPL += a.shares * (cur - prev) * rate
-                    prevMV += a.shares * prev * rate
+                    mult := multiplierForSymbol(sym)
+                    dailyPL += a.shares * (cur - prev) * mult * rate
+                    prevMV += a.shares * prev * mult * rate
                 }
             }
         }
@@ -622,7 +640,8 @@ func (s *TransactionService) computeSummaryFromTxs(allTx []Transaction) (Summary
         if err != nil {
             continue
         }
-        mv := a.shares * price * s.rate(a.currency)
+        mult := multiplierForSymbol(sym)
+        mv := a.shares * price * mult * s.rate(a.currency)
         pl := mv - a.invested
         plPct := 0.0
         if a.invested > 0 {
@@ -650,8 +669,9 @@ func (s *TransactionService) computeSummaryFromTxs(allTx []Transaction) (Summary
                 prev, _, err2 := hp.GetPriceOn(sym, asOfDay.AddDate(0, 0, -1))
                 if err2 == nil && prev > 0 {
                     rate := s.rate(a.currency)
-                    dailyPL += a.shares * (cur - prev) * rate
-                    prevMV += a.shares * prev * rate
+                    mult := multiplierForSymbol(sym)
+                    dailyPL += a.shares * (cur - prev) * mult * rate
+                    prevMV += a.shares * prev * mult * rate
                 }
             }
         }
@@ -1036,6 +1056,7 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
     }
 
     var shares float64
+    mult := multiplierForSymbol(symbol)
     rateSymToRef := s.rate(symbolCCY)
     if rateSymToRef <= 0 {
         rateSymToRef = 1.0
@@ -1051,11 +1072,16 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
         case "deposit":
             // Convert contribution from ref currency into symbol currency
             amtSym := e.amount / rateSymToRef
-            sharesDelta = amtSym / price
+            // If option, price is per contract; divide by price*mult to get contracts
+            denom := price * mult
+            if denom <= 0 { denom = price }
+            sharesDelta = amtSym / denom
             shares += sharesDelta
         case "withdrawal":
             amtSym := e.amount / rateSymToRef
-            qty := amtSym / price
+            denom := price * mult
+            if denom <= 0 { denom = price }
+            qty := amtSym / denom
             sharesDelta = -qty
             shares -= qty
             if shares < 0 {
@@ -1063,7 +1089,7 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
             }
         }
         if debug {
-            equityRef := shares * price * rateSymToRef
+            equityRef := shares * price * mult * rateSymToRef
             dbg.Events = append(dbg.Events, BacktestEventDebug{
                 When:        e.when,
                 Kind:        e.kind,
@@ -1081,7 +1107,7 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
         return BacktestResponse{}, errors.New("failed to price backtest symbol")
     }
     // Alt equity in ref currency
-    altEquity := shares * curPrice * rateSymToRef
+    altEquity := shares * curPrice * mult * rateSymToRef
 
     // Compare vs contributions
     altPL := altEquity - cs.effectiveIn

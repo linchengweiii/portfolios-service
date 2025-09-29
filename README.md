@@ -115,8 +115,10 @@ Response shape:
   "ref_currency": "USD",
   "alt_pl": 123.45,
   "alt_pl_percent": 3.2,
+  "alt_max_drop_percent": -12.8,
   "current_pl": 98.76,
-  "current_pl_percent": 2.5
+  "current_pl_percent": 2.5,
+  "current_max_drop_percent": -9.4
 }
 ```
 

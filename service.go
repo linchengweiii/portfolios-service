@@ -165,6 +165,13 @@ func multiplierForSymbol(sym string) float64 {
     return 1.0
 }
 
+// sameYMD returns true if two timestamps share the same UTC year-month-day.
+func sameYMD(a, b time.Time) bool {
+    a = a.UTC()
+    b = b.UTC()
+    return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
+}
+
 /* ===================== Allocations ===================== */
 
 type AllocationItem struct {
@@ -965,8 +972,16 @@ type BacktestResponse struct {
     RefCurrency     string    `json:"ref_currency"`
     AltPL           float64   `json:"alt_pl"`
     AltPLPercent    float64   `json:"alt_pl_percent"`
+    // AltMaxDropPercent is the maximum percentage drop from a prior
+    // peak of the simulated alternate equity curve (in ref currency).
+    // Expressed as a negative percentage, e.g., -25.3 for a 25.3% drop.
+    AltMaxDropPercent float64 `json:"alt_max_drop_percent"`
     CurrentPL       float64   `json:"current_pl"`
     CurrentPLPercent float64  `json:"current_pl_percent"`
+    // CurrentMaxDropPercent is the maximum percentage drop from a prior
+    // peak of the actual portfolio equity curve (MV+cash in ref currency),
+    // sampled at transaction dates and as-of. Negative percentage.
+    CurrentMaxDropPercent float64 `json:"current_max_drop_percent"`
     Debug           *BacktestDebug `json:"debug,omitempty"`
 }
 
@@ -1062,44 +1077,113 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
         rateSymToRef = 1.0
     }
     var dbg BacktestDebug
-    for _, e := range evs {
-        price, asOf, err := getOn(e.when)
-        if err != nil || price <= 0 {
-            continue
+    // Track alternate equity (ref ccy) over daily history to compute max drop
+    altPeak := 0.0
+    altMaxDrop := 0.0 // negative percentage, e.g., -20.5
+    if hp, ok := s.prices.(HistoryProvider); ok && len(evs) > 0 {
+        // Group events by UTC day
+        evByDay := map[time.Time][]backtestEvent{}
+        start := time.Date(evs[0].when.Year(), evs[0].when.Month(), evs[0].when.Day(), 0, 0, 0, 0, time.UTC)
+        for _, e := range evs {
+            d := time.Date(e.when.Year(), e.when.Month(), e.when.Day(), 0, 0, 0, 0, time.UTC)
+            evByDay[d] = append(evByDay[d], e)
+            if d.Before(start) { start = d }
         }
-        var sharesDelta float64
-        switch e.kind {
-        case "deposit":
-            // Convert contribution from ref currency into symbol currency
-            amtSym := e.amount / rateSymToRef
-            // If option, price is per contract; divide by price*mult to get contracts
-            denom := price * mult
-            if denom <= 0 { denom = price }
-            sharesDelta = amtSym / denom
-            shares += sharesDelta
-        case "withdrawal":
-            amtSym := e.amount / rateSymToRef
-            denom := price * mult
-            if denom <= 0 { denom = price }
-            qty := amtSym / denom
-            sharesDelta = -qty
-            shares -= qty
-            if shares < 0 {
-                shares = 0
+        today := time.Now().UTC()
+        for d := start; !d.After(today); d = d.AddDate(0, 0, 1) {
+            // Daily price on chosen basis
+            price, asOf, err := func() (float64, time.Time, error) {
+                if yp, ok2 := s.prices.(*YahooProvider); ok2 && (priceBasis == "open" || priceBasis == "close") {
+                    return yp.GetPriceOnBasis(symbol, d, priceBasis)
+                }
+                return hp.GetPriceOn(symbol, d)
+            }()
+            if err != nil || price <= 0 {
+                continue
+            }
+            // Process any events on this day at this day's price
+            if dayEvs, ok := evByDay[d]; ok {
+                for _, e := range dayEvs {
+                    var sharesDelta float64
+                    switch e.kind {
+                    case "deposit":
+                        amtSym := e.amount / rateSymToRef
+                        denom := price * mult
+                        if denom <= 0 { denom = price }
+                        sharesDelta = amtSym / denom
+                        shares += sharesDelta
+                    case "withdrawal":
+                        amtSym := e.amount / rateSymToRef
+                        denom := price * mult
+                        if denom <= 0 { denom = price }
+                        qty := amtSym / denom
+                        sharesDelta = -qty
+                        shares -= qty
+                        if shares < 0 { shares = 0 }
+                    }
+                    if debug {
+                        equityRef := shares * price * mult * rateSymToRef
+                        dbg.Events = append(dbg.Events, BacktestEventDebug{
+                            When:        e.when,
+                            Kind:        e.kind,
+                            AmountRef:   e.amount,
+                            Price:       price,
+                            PriceAsOf:   asOf,
+                            SharesDelta: sharesDelta,
+                            SharesTotal: shares,
+                            EquityRef:   equityRef,
+                        })
+                    }
+                }
+            }
+            // End-of-day equity and drawdown update
+            equityRef := shares * price * mult * rateSymToRef
+            if equityRef > altPeak { altPeak = equityRef }
+            if altPeak > 0 {
+                dd := (equityRef/altPeak - 1.0) * 100.0
+                if dd < altMaxDrop { altMaxDrop = dd }
             }
         }
-        if debug {
+    } else {
+        // Fallback: process only on event dates and final as-of
+        for _, e := range evs {
+            price, asOf, err := getOn(e.when)
+            if err != nil || price <= 0 { continue }
+            var sharesDelta float64
+            switch e.kind {
+            case "deposit":
+                amtSym := e.amount / rateSymToRef
+                denom := price * mult
+                if denom <= 0 { denom = price }
+                sharesDelta = amtSym / denom
+                shares += sharesDelta
+            case "withdrawal":
+                amtSym := e.amount / rateSymToRef
+                denom := price * mult
+                if denom <= 0 { denom = price }
+                qty := amtSym / denom
+                sharesDelta = -qty
+                shares -= qty
+                if shares < 0 { shares = 0 }
+            }
             equityRef := shares * price * mult * rateSymToRef
-            dbg.Events = append(dbg.Events, BacktestEventDebug{
-                When:        e.when,
-                Kind:        e.kind,
-                AmountRef:   e.amount,
-                Price:       price,
-                PriceAsOf:   asOf,
-                SharesDelta: sharesDelta,
-                SharesTotal: shares,
-                EquityRef:   equityRef,
-            })
+            if equityRef > altPeak { altPeak = equityRef }
+            if altPeak > 0 {
+                dd := (equityRef/altPeak - 1.0) * 100.0
+                if dd < altMaxDrop { altMaxDrop = dd }
+            }
+            if debug {
+                dbg.Events = append(dbg.Events, BacktestEventDebug{
+                    When:        e.when,
+                    Kind:        e.kind,
+                    AmountRef:   e.amount,
+                    Price:       price,
+                    PriceAsOf:   asOf,
+                    SharesDelta: sharesDelta,
+                    SharesTotal: shares,
+                    EquityRef:   equityRef,
+                })
+            }
         }
     }
     curPrice, _, err := s.prices.GetPrice(symbol)
@@ -1108,6 +1192,12 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
     }
     // Alt equity in ref currency
     altEquity := shares * curPrice * mult * rateSymToRef
+    // Include final point in drawdown
+    if altEquity > altPeak { altPeak = altEquity }
+    if altPeak > 0 {
+        dd := (altEquity/altPeak - 1.0) * 100.0
+        if dd < altMaxDrop { altMaxDrop = dd }
+    }
 
     // Compare vs contributions
     altPL := altEquity - cs.effectiveIn
@@ -1122,14 +1212,168 @@ func (s *TransactionService) computeBacktestFromTxs(allTx []Transaction, symbol,
         return BacktestResponse{}, err
     }
 
+    // Compute current portfolio max drop (drawdown) over time sampled by dates of transactions
+    currentMaxDrop := 0.0 // negative percentage
+    if s.prices != nil {
+        // Sort transactions chronologically with inflows before outflows on same date
+        xs := make([]Transaction, len(allTx))
+        copy(xs, allTx)
+        insertionSort(xs, func(a, b Transaction) bool {
+            if a.Date.Before(b.Date) { return true }
+            if a.Date.After(b.Date) { return false }
+            // inflows before outflows at equal timestamps (reuse logic)
+            deltaA := func(tx Transaction) float64 {
+                switch tx.TradeType {
+                case TradeTypeBuy:
+                    amt := tx.Total; if amt < 0 { amt = -amt }
+                    return -amt * s.rate(tx.Currency)
+                case TradeTypeSell, TradeTypeDividend:
+                    amt := tx.Total; if amt < 0 { amt = -amt }
+                    return +amt * s.rate(tx.Currency)
+                case TradeTypeCash:
+                    return tx.Total * s.rate(tx.Currency)
+                default:
+                    return 0
+                }
+            }
+            da := deltaA(a); db := deltaA(b)
+            if da == db { return a.ID < b.ID }
+            return da > db
+        })
+
+        type agg struct{
+            shares float64
+            ccy    string
+        }
+        holdings := map[string]*agg{}
+        cash := 0.0 // in ref ccy
+
+        // cache for historical prices by day
+        type key struct{ sym string; y int; m int; d int; basis string }
+        priceCache := map[key]float64{}
+        asOfCache := map[key]time.Time{}
+        getOn2 := func(sym string, d time.Time) (float64, time.Time, error) {
+            k := key{sym: sym, y: d.Year(), m: int(d.Month()), d: d.Day(), basis: priceBasis}
+            if p, ok := priceCache[k]; ok {
+                return p, asOfCache[k], nil
+            }
+            var p float64
+            var as time.Time
+            var err error
+            if hp, ok := s.prices.(HistoryProvider); ok {
+                if yp, ok2 := s.prices.(*YahooProvider); ok2 && (priceBasis == "open" || priceBasis == "close") {
+                    p, as, err = yp.GetPriceOnBasis(sym, d, priceBasis)
+                } else {
+                    p, as, err = hp.GetPriceOn(sym, d)
+                }
+            } else {
+                p, as, err = s.prices.GetPrice(sym)
+            }
+            if err == nil && p > 0 {
+                priceCache[k] = p
+                asOfCache[k] = as
+            }
+            return p, as, err
+        }
+
+        // helper to compute equity at a date
+        computeEquityAt := func(day time.Time) float64 {
+            total := cash
+            for sym, a := range holdings {
+                if a.shares <= 0 { continue }
+                p, _, err := getOn2(sym, day)
+                if err != nil || p <= 0 { continue }
+                mult := multiplierForSymbol(sym)
+                total += a.shares * p * mult * s.rate(a.ccy)
+            }
+            return total
+        }
+
+        // Iterate, injecting inferred deposits to keep cash non-negative as in cashStats
+        var curDay time.Time
+        haveDay := false
+        peak := 0.0
+        updateDraw := func(day time.Time) {
+            eq := computeEquityAt(day)
+            if eq > peak { peak = eq }
+            if peak > 0 {
+                dd := (eq/peak - 1.0) * 100.0
+                if dd < currentMaxDrop { currentMaxDrop = dd }
+            }
+        }
+        for i, tx := range xs {
+            // day change: finalize previous day equity
+            if !haveDay || !sameYMD(curDay, tx.Date) {
+                if haveDay {
+                    updateDraw(curDay)
+                }
+                curDay = tx.Date
+                haveDay = true
+            }
+            // Compute cash delta for this tx
+            delta := 0.0
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                amt := tx.Total; if amt < 0 { amt = -amt }
+                delta = -amt * s.rate(tx.Currency)
+            case TradeTypeSell:
+                amt := tx.Total; if amt < 0 { amt = -amt }
+                delta = +amt * s.rate(tx.Currency)
+            case TradeTypeDividend:
+                amt := tx.Total; if amt < 0 { amt = -amt }
+                delta = +amt * s.rate(tx.Currency)
+            case TradeTypeCash:
+                delta = tx.Total * s.rate(tx.Currency)
+            }
+            // Inject inferred cash if needed before applying delta
+            if cash+delta < 0 {
+                need := -(cash + delta)
+                cash += need
+            }
+            // Apply holdings change
+            switch tx.TradeType {
+            case TradeTypeBuy:
+                a := holdings[tx.Symbol]
+                if a == nil { a = &agg{}; holdings[tx.Symbol] = a }
+                if tx.Currency != "" { a.ccy = strings.ToUpper(tx.Currency) }
+                a.shares += tx.Shares
+            case TradeTypeSell:
+                a := holdings[tx.Symbol]
+                if a == nil { a = &agg{}; holdings[tx.Symbol] = a }
+                if tx.Currency != "" { a.ccy = strings.ToUpper(tx.Currency) }
+                a.shares -= tx.Shares
+                if a.shares < 0 { a.shares = 0 }
+            case TradeTypeDividend:
+                // no change to shares
+            case TradeTypeCash:
+                // already reflected via delta
+            }
+            // Apply cash change
+            cash += delta
+
+            // If last tx overall, close day
+            if i == len(xs)-1 {
+                updateDraw(curDay)
+            }
+        }
+
+        // Also include an as-of evaluation (today) if we have any holdings
+        if haveDay {
+            today := time.Now().UTC()
+            updateDraw(today)
+        }
+    }
+
     resp := BacktestResponse{
         Symbol:           strings.ToUpper(strings.TrimSpace(symbol)),
         AsOf:             sum.AsOf,
         RefCurrency:      s.refCCY,
         AltPL:            altPL,
         AltPLPercent:     altPct,
+        AltMaxDropPercent: altMaxDrop,
         CurrentPL:        sum.TotalUnrealizedPL,
         CurrentPLPercent: sum.TotalUnrealizedPLPerc,
+        CurrentMaxDropPercent: currentMaxDrop,
     }
     if debug {
         resp.Debug = &dbg

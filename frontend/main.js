@@ -235,6 +235,8 @@ function renderBTResult(targetSel, data){
   const rows = [
     ['Alt P/L (peak %)', `${fmt(data.alt_pl)} (${fmtPct(data.alt_pl_percent)})`],
     ['Current P/L (peak %)', `${fmt(data.current_pl)} (${fmtPct(data.current_pl_percent)})`],
+    ['Alt Max Drop', `${fmtPct(data.alt_max_drop_percent)}`],
+    ['Current Max Drop', `${fmtPct(data.current_max_drop_percent)}`],
   ];
   $(targetSel).innerHTML = rows.map(([k,v])=>`<div class="card"><span class="k">${k}</span><span class="v">${v}</span></div>`).join('');
 }

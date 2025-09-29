@@ -19,6 +19,7 @@ main{padding:16px;display:grid;gap:16px;grid-template-columns:1fr}
 .card{padding:10px;border:1px solid var(--border);border-radius:8px;background:#0b0d14}
 .card .k{display:block;color:var(--muted);font-size:12px}
 .card .v{display:block;margin-top:4px;font-weight:700}
+.card .sub{display:block;font-size:11px;opacity:.85}
 .table-wrap{padding:0 16px 16px 16px;overflow:auto}
 table{width:100%;border-collapse:collapse}
 th,td{padding:8px;border-bottom:1px solid var(--border);text-align:right}

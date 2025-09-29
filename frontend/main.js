@@ -41,18 +41,23 @@ async function apiPf(path){
 }
 
 function cardsFromSummary(s){
-  const dailyPct = (s.daily_pl_percent!==undefined && s.daily_pl_percent!==null)
-    ? `<span class="${clsPL(s.daily_pl_percent)}">${fmtPct(s.daily_pl_percent)}</span>`
-    : '';
-  const unrealPct = (s.total_unrealized_pl_percent!==undefined && s.total_unrealized_pl_percent!==null)
-    ? `<span class="${clsPL(s.total_unrealized_pl_percent)}">${fmtPct(s.total_unrealized_pl_percent)}</span>`
-    : '';
+  const equityTotal = Number(s.total_market_value||0) + Number(s.balance||0);
+  // Daily P/L amount and percent with color (skip color if exactly 0)
+  const dailyPLVal = (s.daily_pl===undefined || s.daily_pl===null) ? null : Number(s.daily_pl);
+  const dailyPLHtml = (dailyPLVal===null) ? '' : (dailyPLVal===0 ? fmt(dailyPLVal) : `<span class="${clsPL(dailyPLVal)}">${fmt(dailyPLVal)}</span>`);
+  const dailyPctVal = (s.daily_pl_percent===undefined || s.daily_pl_percent===null) ? null : Number(s.daily_pl_percent);
+  const dailyPctHtml = (dailyPctVal===null) ? '' : (dailyPctVal===0 ? fmtPct(dailyPctVal) : `<span class="${clsPL(dailyPctVal)}">${fmtPct(dailyPctVal)}</span>`);
+  // Total P/L amount and percent with color
+  const plVal = (s.total_unrealized_pl===undefined || s.total_unrealized_pl===null) ? null : Number(s.total_unrealized_pl);
+  const plHtml = (plVal===null) ? '' : (plVal===0 ? fmt(plVal) : `<span class="${clsPL(plVal)}">${fmt(plVal)}</span>`);
+  const plPctVal = (s.total_unrealized_pl_percent===undefined || s.total_unrealized_pl_percent===null) ? null : Number(s.total_unrealized_pl_percent);
+  const plPctHtml = (plPctVal===null) ? '' : (plPctVal===0 ? fmtPct(plPctVal) : `<span class="${clsPL(plPctVal)}">${fmtPct(plPctVal)}</span>`);
+  const cost = Number(s.effective_cash_in_peak||0);
+  const plSub = `<small class="sub muted">P/L: ${fmt(plVal||0)} ÷ Cost: ${fmt(cost)}${cost>0 ? ` = ${fmtPct((plVal||0)/cost*100)}` : ''}</small>`;
   const rows = [
-    ['Total Market Value', fmt(s.total_market_value)],
-    ...(s.daily_pl!==undefined ? [['Daily P/L (Daily %)', `${fmt(s.daily_pl)} (${dailyPct})`]] : []),
-    ['P/L (P/L % peak)', `${fmt(s.total_unrealized_pl)} (${unrealPct})`],
-    ['Total Invested', fmt(s.total_invested)],
-    ['Balance', fmt(s.balance)],
+    ['Total Market Value', `${fmt(equityTotal)}<br><small class="sub muted">Holdings: ${fmt(s.total_market_value)} • Balance: ${fmt(s.balance)}</small>`],
+    ...(dailyPLVal===null ? [] : [['Daily P/L (Percentage)', `${dailyPLHtml} (${dailyPctHtml})`]]),
+    ['P/L (Percentage)', `${plHtml} (${plPctHtml})<br>${plSub}`],
   ];
   return rows
     .map(([k,v])=> `<div class="card"><span class="k">${k}</span><span class="v">${v}</span></div>`)

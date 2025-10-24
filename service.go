@@ -172,6 +172,43 @@ func sameYMD(a, b time.Time) bool {
     return a.Year() == b.Year() && a.Month() == b.Month() && a.Day() == b.Day()
 }
 
+// lessForPositions orders transactions for position/invested calculations.
+// - Primary: by date (ascending)
+// - Same day: buys before dividends before sells; cash last
+// - Final tie-breaker: by ID to keep order deterministic
+func lessForPositions(a, b Transaction) bool {
+    if a.Date.Before(b.Date) {
+        return true
+    }
+    if a.Date.After(b.Date) {
+        return false
+    }
+    if !sameYMD(a.Date, b.Date) {
+        // Different timestamps within the same day precision aren't expected,
+        // but treat them as equal and keep current order.
+        return false
+    }
+    rank := func(t TradeType) int {
+        switch t {
+        case TradeTypeBuy:
+            return 0
+        case TradeTypeDividend:
+            return 1
+        case TradeTypeSell:
+            return 2
+        case TradeTypeCash:
+            return 3
+        default:
+            return 9
+        }
+    }
+    ra, rb := rank(a.TradeType), rank(b.TradeType)
+    if ra != rb {
+        return ra < rb
+    }
+    return a.ID < b.ID
+}
+
 /* ===================== Allocations ===================== */
 
 type AllocationItem struct {
@@ -234,7 +271,7 @@ func (s *TransactionService) computeAllocationsFromTxs(all []Transaction, basis 
     bucket := map[string]*agg{}
 
     // Process in chronological order so average-cost reductions on sell are correct
-    insertionSort(all, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
+    insertionSort(all, lessForPositions)
 
     for _, tx := range all {
         switch tx.TradeType {
@@ -437,7 +474,7 @@ func (s *TransactionService) ComputeSummaryAll() (SummaryResponse, error) {
         sumEffectiveIn += cs.effectiveIn
         sumPeakIn += cs.peakContrib
         // accumulate positions using average cost
-        insertionSort(txs, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
+        insertionSort(txs, lessForPositions)
         for _, tx := range txs {
             switch tx.TradeType {
             case TradeTypeBuy, TradeTypeSell, TradeTypeDividend:
@@ -588,7 +625,7 @@ func (s *TransactionService) computeSummaryFromTxs(allTx []Transaction) (Summary
     bucket := map[string]*agg{}
 
     // Sort by date for correct average cost handling on sells
-    insertionSort(allTx, func(a, b Transaction) bool { return a.Date.Before(b.Date) })
+    insertionSort(allTx, lessForPositions)
 
     for _, tx := range allTx {
         // Position aggregation (ignore cash)

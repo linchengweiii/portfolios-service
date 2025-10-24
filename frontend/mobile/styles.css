@@ -1,0 +1,44 @@
+/* Mobile-first overrides (base loaded from /app/styles.css) */
+html,body{font-size:16px}
+main{padding:8px;gap:8px}
+.panel-header{padding:8px 12px}
+.grid{gap:8px;padding:8px 12px}
+.controls{flex-direction:column;align-items:stretch;gap:8px}
+label{justify-content:space-between}
+input,select,button{padding:10px 12px;font-size:16px}
+.grid{grid-template-columns:1fr}
+.stackbar{height:56px}
+header h1{font-size:18px}
+.panel h2{font-size:16px}
+.panel-subcontrols .controls{flex-direction:column;align-items:stretch}
+/* Make tables comfortably scrollable on small screens */
+.table-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{min-width:auto;width:100%}
+th,td{padding:4px 6px}
+.table-wrap{padding:0 8px 8px 8px}
+
+/* Tighter symbol column with shares on second line */
+td.symcol{white-space:nowrap}
+td.symcol .sym{display:block;font-weight:700}
+td.symcol .shares{display:block;font-size:12px;color:var(--muted)}
+
+/* Header should not be sticky on mobile */
+header{position:static;top:auto}
+
+/* Pie chart container */
+.pie-wrap{padding:0 12px 8px 12px}
+/* Place legend to the right of the pie */
+.pie-block{display:flex;align-items:center;gap:12px}
+.pie{display:block;max-width:180px;flex:0 0 160px}
+.slice.active{stroke:#fff;stroke-width:2}
+
+/* Remove card-like styling on mobile */
+.card{padding:4px 0;background:transparent;border:none;box-shadow:none}
+.card .k{font-size:12px}
+.card .v{font-weight:600}
+
+/* Legend for pie */
+.legend{display:flex;flex-direction:column;gap:6px;padding:0}
+.legend-item{display:inline-flex;align-items:center;gap:6px;font-size:12px;cursor:pointer}
+.legend-item .swatch{width:10px;height:10px;border-radius:2px;border:1px solid var(--border)}
+.legend-item.active{outline:1px dashed var(--muted);outline-offset:2px}

@@ -10,7 +10,8 @@ import (
     fs "io/fs"
 )
 
-//go:embed frontend/*
+// Embed frontend files, including the mobile subfolder
+//go:embed frontend/* frontend/mobile/*
 var static embed.FS
 
 // ===== HTTP adapter =====
@@ -39,17 +40,28 @@ func (s *Server) routes() {
     // Single subtree handler for everything under /portfolios/
     s.mux.HandleFunc("/portfolios/", s.handlePortfoliosSub)
 
-    // Static frontend: served at /app/ (embedded)
+    // Static frontend: served at /app/ and /mobile/
     sub, err := fs.Sub(static, "frontend")
     if err == nil {
+        // /app/ serves the root of frontend (desktop UI)
         s.mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.FS(sub))))
+
+        // /mobile/ serves the mobile subdirectory in frontend
+        if mobileFS, err2 := fs.Sub(static, "frontend/mobile"); err2 == nil {
+            s.mux.Handle("/mobile/", http.StripPrefix("/mobile/", http.FileServer(http.FS(mobileFS))))
+        }
     } else {
         // Fallback to local dir in dev
         s.mux.Handle("/app/", http.StripPrefix("/app/", http.FileServer(http.Dir("frontend"))))
+        s.mux.Handle("/mobile/", http.StripPrefix("/mobile/", http.FileServer(http.Dir("frontend/mobile"))))
     }
     // Redirect /app -> /app/
     s.mux.HandleFunc("/app", func(w http.ResponseWriter, r *http.Request) {
         http.Redirect(w, r, "/app/", http.StatusPermanentRedirect)
+    })
+    // Redirect /mobile -> /mobile/
+    s.mux.HandleFunc("/mobile", func(w http.ResponseWriter, r *http.Request) {
+        http.Redirect(w, r, "/mobile/", http.StatusPermanentRedirect)
     })
 }
 

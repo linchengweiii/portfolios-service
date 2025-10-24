@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Portfolio Mobile</title>
+    <!-- Load base styles from /app, then mobile overrides -->
+    <link rel="stylesheet" href="/app/styles.css" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Portfolio (Mobile)</h1>
+      <div class="controls">
+        <label>API
+          <input id="baseUrl" type="text" value="http://localhost:8080" />
+        </label>
+        <label>Portfolio
+          <select id="portfolioSelect"></select>
+        </label>
+        <label>Ref CCY
+          <select id="refCcy">
+            <option value="TWD">TWD</option>
+            <option value="USD">USD</option>
+          </select>
+        </label>
+        <button id="refresh">Refresh</button>
+        <span id="status" class="status"></span>
+      </div>
+    </header>
+
+    <main>
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Overview</h2>
+          <div class="right">
+            <label>Labels
+              <select id="labelThreshold"></select>
+            </label>
+          </div>
+        </div>
+        <div id="summary" class="grid"></div>
+        <h3>Allocations</h3>
+        <div id="bar" class="pie-wrap"></div>
+        <div id="alloc" class="table-wrap"></div>
+
+        <div class="panel-subcontrols">
+          <h3>Backtest</h3>
+          <div class="controls">
+            <label>Symbol <input id="btSymbol" type="text" placeholder="e.g., QQQ" /></label>
+            <label>CCY <input id="btCcy" type="text" value="USD"/></label>
+            <label>Price
+              <select id="btBasis">
+                <option value="close" selected>close</option>
+                <option value="open">open</option>
+              </select>
+            </label>
+            <button id="runBT">Run</button>
+          </div>
+          <div id="btResult" class="grid"></div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <small>Mobile UI • portfolio-service</small>
+    </footer>
+
+    <script type="module" src="main.js"></script>
+  </body>
+  </html>
